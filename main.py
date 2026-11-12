@@ -419,7 +419,7 @@ class MainWindow(QMainWindow):
         if provider == "OpenAI":
             self.prompt_model.setEditable(False)
             self.prompt_model.addItems(OPENAI_MODELS)
-            self.prompt_model.setCurrentText("gpt-4.1-mini")
+            self.prompt_model.setCurrentText("gpt-6-luna")
         else:
             # LM Studio IDs depend on the locally loaded model.
             self.prompt_model.setEditable(True)
