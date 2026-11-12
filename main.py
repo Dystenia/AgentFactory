@@ -7,7 +7,7 @@ from pathlib import Path
 import json
 from project_inspector import inspect_project, report_text
 from prompt_context import collect_context, build_request, SYSTEM_PROMPT
-from model_router import generate, ModelError
+from model_router import generate, list_openai_models, ModelError
 from project_analysis import MODES, system_prompt_for
 from project_access import validate_project_root
 from PySide6.QtCore import QThread, Signal
@@ -23,7 +23,7 @@ APP_DIR = Path(__file__).resolve().parent
 ICON_PATH = APP_DIR / "assets" / "dystenia_agent_factory.ico"
 
 # Curated model IDs: availability depends on the user's API account.
-OPENAI_MODELS = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.2", "gpt-5.1", "gpt-5", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini"]
+OPENAI_MODELS = ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra", "gpt-5.6-sol", "gpt-5", "gpt-4.1-mini"]
 
 DB = Path.home() / ".dystenia-agent-factory" / "jobs.sqlite3"
 
@@ -109,22 +109,38 @@ class PromptWorker(QThread):
     succeeded = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, provider, model, payload, mode, api_key):
+    def __init__(self, provider, model, payload, mode, api_key, max_output_tokens):
         super().__init__()
         self.provider, self.model, self.payload, self.mode, self.api_key = provider, model, payload, mode, api_key
+        self.max_output_tokens = max_output_tokens
 
     def run(self):
         try:
-            self.succeeded.emit(generate(self.provider, self.model, system_prompt_for(self.mode), self.payload, api_key=self.api_key))
+            self.succeeded.emit(generate(self.provider, self.model, system_prompt_for(self.mode), self.payload, api_key=self.api_key, max_output_tokens=self.max_output_tokens))
         except Exception as exc:
             self.failed.emit(str(exc) if isinstance(exc, ModelError) else "Unerwarteter Anbieterfehler.")
+
+
+class ModelListWorker(QThread):
+    succeeded = Signal(list)
+    failed = Signal(str)
+
+    def __init__(self, api_key):
+        super().__init__()
+        self.api_key = api_key
+
+    def run(self):
+        try:
+            self.succeeded.emit(list_openai_models(api_key=self.api_key))
+        except ModelError as exc:
+            self.failed.emit(str(exc))
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.db = connect_db()
-        self.setWindowTitle("Dystenia Agent Factory · MVP 0.3.5")
+        self.setWindowTitle("Dystenia Agent Factory · MVP 0.3.6")
         self.editing_job_id = None
         # Native decorated Windows window; keep it inside the usable desktop area.
         self.setWindowFlags(Qt.Window)
@@ -261,13 +277,22 @@ class MainWindow(QMainWindow):
         self.prompt_model = QComboBox()
         self.prompt_model.setEditable(False)
         self.prompt_model.addItems(OPENAI_MODELS)
-        self.prompt_model.setCurrentText("gpt-4.1-mini")
+        self.prompt_model.setCurrentText("gpt-6-luna")
         self.prompt_model.currentTextChanged.connect(self.invalidate_prompt_preview)
         provider_row.addWidget(QLabel("Anbieter"))
         provider_row.addWidget(self.prompt_provider)
         provider_row.addWidget(QLabel("Modell-ID"))
         provider_row.addWidget(self.prompt_model)
         prompt_layout.addLayout(provider_row)
+        refresh_models = QPushButton("Verfügbare OpenAI-Modelle abrufen")
+        refresh_models.clicked.connect(self.refresh_openai_models)
+        prompt_layout.addWidget(refresh_models)
+        self.output_budget = QComboBox()
+        self.output_budget.addItems(["4096", "8192", "12000", "16000", "24000", "32000", "65536"])
+        self.output_budget.setCurrentText("12000")
+        self.output_budget.currentTextChanged.connect(self.invalidate_prompt_preview)
+        prompt_layout.addWidget(QLabel("Maximale Output-Tokens (einschließlich Reasoning; höhere Werte können mehr kosten)"))
+        prompt_layout.addWidget(self.output_budget)
         key_row = QHBoxLayout()
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.Password)
@@ -368,6 +393,26 @@ class MainWindow(QMainWindow):
             self.job_project.setCurrentIndex(max(0, index))
             self.job_project.blockSignals(False)
 
+    def refresh_openai_models(self):
+        if self.prompt_provider.currentText() != "OpenAI":
+            QMessageBox.information(self, "Modelle", "Bitte zuerst OpenAI als Anbieter auswählen.")
+            return
+        self.model_worker = ModelListWorker(self.api_key.text().strip() or None)
+        self.model_worker.succeeded.connect(self.models_received)
+        self.model_worker.failed.connect(lambda msg: QMessageBox.warning(self, "Modellabfrage", msg))
+        self.model_worker.finished.connect(self.model_worker.deleteLater)
+        self.model_worker.start()
+
+    def models_received(self, models):
+        previous = self.prompt_model.currentText()
+        self.prompt_model.blockSignals(True)
+        self.prompt_model.clear()
+        self.prompt_model.addItems(models)
+        if previous in models:
+            self.prompt_model.setCurrentText(previous)
+        self.prompt_model.blockSignals(False)
+        self.invalidate_prompt_preview()
+
     def provider_changed(self, provider):
         self.prompt_model.blockSignals(True)
         self.prompt_model.clear()
@@ -393,7 +438,7 @@ class MainWindow(QMainWindow):
                 validate_project_root(root)
                 context = collect_context(root, json.loads(row[0]))
             self.prepared_payload = build_request(self.prompt_task.toPlainText(), context)
-            self.prepared_identity = (self.prompt_task.toPlainText(), root, self.prompt_provider.currentText(), self.prompt_model.currentText(), self.prompt_mode.currentText())
+            self.prepared_identity = (self.prompt_task.toPlainText(), root, self.prompt_provider.currentText(), self.prompt_model.currentText(), self.prompt_mode.currentText(), self.output_budget.currentText())
             self.context_preview.setPlainText(self.prepared_payload)
             self.send_button.setEnabled(True)
         except (OSError, ValueError, sqlite3.Error) as exc:
@@ -401,7 +446,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Kontextprüfung", str(exc))
 
     def send_prompt(self):
-        identity = (self.prompt_task.toPlainText(), self.prompt_project.currentData(), self.prompt_provider.currentText(), self.prompt_model.currentText(), self.prompt_mode.currentText())
+        identity = (self.prompt_task.toPlainText(), self.prompt_project.currentData(), self.prompt_provider.currentText(), self.prompt_model.currentText(), self.prompt_mode.currentText(), self.output_budget.currentText())
         if identity != getattr(self, "prepared_identity", None):
             self.send_button.setEnabled(False)
             QMessageBox.warning(self, "Vorschau veraltet", "Eingaben wurden geändert. Bitte Kontext erneut vorbereiten.")
@@ -426,7 +471,7 @@ class MainWindow(QMainWindow):
             return
         self.send_button.setEnabled(False)
         self.prompt_result.setPlainText("Anfrage läuft …")
-        self.worker = PromptWorker(identity[2], identity[3], self.prepared_payload, identity[4], self.api_key.text().strip() if identity[2] == "OpenAI" else None)
+        self.worker = PromptWorker(identity[2], identity[3], self.prepared_payload, identity[4], self.api_key.text().strip() if identity[2] == "OpenAI" else None, int(identity[5]))
         self.worker.succeeded.connect(self.prompt_success)
         self.worker.failed.connect(self.prompt_failure)
         self.worker.finished.connect(self.worker.deleteLater)
