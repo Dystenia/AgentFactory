@@ -62,3 +62,30 @@ def generate(provider, model, system_prompt, user_prompt, timeout=180, api_key=N
             )
         raise ModelError("Der lokale Anbieter hat keinen Text zurückgegeben.")
     return result
+
+def list_openai_models(api_key=None, timeout=20):
+    """Fetch accessible GPT model IDs; never log or persist credentials."""
+    key = (api_key or os.environ.get("OPENAI_API_KEY", "")).strip()
+    if not key:
+        raise ModelError("OpenAI API-Key fehlt.")
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/models",
+        headers={"Authorization": "Bearer " + key}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            payload = json.loads(response.read(2_000_000).decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise ModelError(f"Modellabfrage fehlgeschlagen (HTTP {exc.code}).") from None
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        raise ModelError("Modellabfrage: Verbindungsfehler oder ungültige Antwort.") from None
+    models = sorted({
+        item["id"] for item in payload.get("data", [])
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+        and item["id"].startswith("gpt-")
+        and "realtime" not in item["id"] and "audio" not in item["id"]
+        and "image" not in item["id"] and "transcribe" not in item["id"]
+    })
+    if not models:
+        raise ModelError("Keine passenden GPT-Modelle für diesen API-Key gefunden.")
+    return models
