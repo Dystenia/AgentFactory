@@ -98,6 +98,9 @@ def connect_db():
         id TEXT PRIMARY KEY, imported_at TEXT NOT NULL, root TEXT NOT NULL UNIQUE,
         name TEXT NOT NULL, report_json TEXT NOT NULL
     )""")
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
+    if "project_root" not in columns:
+        conn.execute("ALTER TABLE jobs ADD COLUMN project_root TEXT")
     conn.commit()
     return conn
 
@@ -121,7 +124,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.db = connect_db()
-        self.setWindowTitle("Dystenia Agent Factory · MVP 0.3.4")
+        self.setWindowTitle("Dystenia Agent Factory · MVP 0.3.5")
         self.editing_job_id = None
         # Native decorated Windows window; keep it inside the usable desktop area.
         self.setWindowFlags(Qt.Window)
@@ -143,6 +146,9 @@ class MainWindow(QMainWindow):
         self.kind = QComboBox()
         self.kind.addItems(["Neues Projekt", "Bestehendes Projekt (Planung)"])
         form.addRow("Auftragstyp", self.kind)
+        self.job_project = QComboBox()
+        self.job_project.addItem("Kein importiertes Codeprojekt", "")
+        form.addRow("Zugeordnetes Codeprojekt", self.job_project)
         self.description = QTextEdit()
         self.description.setPlaceholderText("Was soll entwickelt werden?")
         form.addRow("Anforderungen", self.description)
@@ -227,7 +233,12 @@ class MainWindow(QMainWindow):
         self.prompt_project.setMinimumWidth(240)
         self.prompt_project.setMaxVisibleItems(15)
         self.prompt_project.currentIndexChanged.connect(self.invalidate_prompt_preview)
-        prompt_layout.addWidget(QLabel("Projektkontext (optional)"))
+        prompt_layout.addWidget(QLabel("Gespeicherten Entwicklungsauftrag auswählen"))
+        self.prompt_job = QComboBox()
+        self.prompt_job.addItem("Kein Auftrag ausgewählt", "")
+        self.prompt_job.currentIndexChanged.connect(self.select_prompt_job)
+        prompt_layout.addWidget(self.prompt_job)
+        prompt_layout.addWidget(QLabel("Importiertes Codeprojekt (optional)"))
         prompt_layout.addWidget(self.prompt_project)
         reload_projects = QPushButton("Projektliste aktualisieren")
         reload_projects.clicked.connect(self.refresh_prompt_projects)
@@ -287,6 +298,7 @@ class MainWindow(QMainWindow):
         self.refresh_imports()
         self.refresh_prompt_projects()
         self.refresh()
+        self.refresh_prompt_jobs()
 
     @staticmethod
     def scroll_tab(widget):
@@ -299,6 +311,33 @@ class MainWindow(QMainWindow):
 
     def invalidate_prompt_preview(self, *_):
         self.send_button.setEnabled(False)
+
+    def refresh_prompt_jobs(self):
+        previous = self.prompt_job.currentData()
+        self.prompt_job.blockSignals(True)
+        self.prompt_job.clear()
+        self.prompt_job.addItem("Kein Auftrag ausgewählt", "")
+        for job_id, name in self.db.execute(
+            "SELECT id, name FROM jobs ORDER BY created_at DESC"
+        ):
+            self.prompt_job.addItem(name, job_id)
+        index = self.prompt_job.findData(previous) if previous else 0
+        self.prompt_job.setCurrentIndex(max(0, index))
+        self.prompt_job.blockSignals(False)
+
+    def select_prompt_job(self, index):
+        job_id = self.prompt_job.itemData(index)
+        if not job_id:
+            self.invalidate_prompt_preview()
+            return
+        record = self.db.execute(
+            "SELECT description, project_root FROM jobs WHERE id=?", (job_id,)
+        ).fetchone()
+        if record:
+            self.prompt_task.setPlainText(record[0])
+            project_index = self.prompt_project.findData(record[1] or "")
+            self.prompt_project.setCurrentIndex(max(0, project_index))
+        self.invalidate_prompt_preview()
 
     def refresh_prompt_projects(self):
         previous = self.prompt_project.currentData()
@@ -316,6 +355,18 @@ class MainWindow(QMainWindow):
             self.prompt_project.setCurrentIndex(1)
         self.prompt_project.blockSignals(False)
         self.send_button.setEnabled(False)
+        if hasattr(self, "job_project"):
+            previous_job_project = self.job_project.currentData()
+            self.job_project.blockSignals(True)
+            self.job_project.clear()
+            self.job_project.addItem("Kein importiertes Codeprojekt", "")
+            for name, root in self.db.execute(
+                "SELECT name, root FROM imported_projects ORDER BY imported_at DESC"
+            ):
+                self.job_project.addItem(name, root)
+            index = self.job_project.findData(previous_job_project) if previous_job_project else 0
+            self.job_project.setCurrentIndex(max(0, index))
+            self.job_project.blockSignals(False)
 
     def provider_changed(self, provider):
         self.prompt_model.blockSignals(True)
@@ -501,6 +552,8 @@ class MainWindow(QMainWindow):
         self.name.setText(project_name)
         self.kind.setCurrentText("Bestehendes Projekt (Planung)")
         self.description.setPlainText(f"Projekt: {project_name}\\n\\nGewünschte Änderungen:\\n")
+        index = self.job_project.findData(project_root)
+        self.job_project.setCurrentIndex(index if index >= 0 else 0)
         self.tabs.setCurrentIndex(0)
         self.description.setFocus()
 
@@ -513,6 +566,7 @@ class MainWindow(QMainWindow):
         self.editing_job_id = None
         self.name.clear()
         self.kind.setCurrentIndex(0)
+        self.job_project.setCurrentIndex(0)
         self.description.clear()
         self.edit_label.setText("NEUER AUFTRAG")
         self.save_button.setText("Neuen Auftrag speichern")
@@ -522,12 +576,14 @@ class MainWindow(QMainWindow):
         if item is None:
             return
         job = self.db.execute(
-            "SELECT id, name, description, kind FROM jobs WHERE id = ?", (item.text(),)
+            "SELECT id, name, description, kind, project_root FROM jobs WHERE id = ?", (item.text(),)
         ).fetchone()
         if not job:
             QMessageBox.warning(self, "Nicht gefunden", "Der Auftrag existiert nicht mehr.")
             return
         self.editing_job_id = job[0]
+        idx = self.job_project.findData(job[4] or "")
+        self.job_project.setCurrentIndex(max(0, idx))
         self.name.setText(job[1])
         self.description.setPlainText(job[2])
         index = self.kind.findText(job[3])
@@ -539,6 +595,12 @@ class MainWindow(QMainWindow):
         name = self.name.text().strip()
         description = self.description.toPlainText().strip()
         kind = self.kind.currentText()
+        project_root = self.job_project.currentData() or None
+        if project_root and not self.db.execute(
+            "SELECT 1 FROM imported_projects WHERE root=?", (project_root,)
+        ).fetchone():
+            QMessageBox.warning(self, "Projekt", "Zugeordnetes Codeprojekt nicht gefunden.")
+            return
         if not name or not description:
             QMessageBox.warning(self, "Fehlende Angaben", "Projektname und Anforderungen eingeben.")
             return
@@ -547,34 +609,35 @@ class MainWindow(QMainWindow):
             with self.db:
                 if self.editing_job_id:
                     old = self.db.execute(
-                        "SELECT name, description, kind, status FROM jobs WHERE id = ?",
+                        "SELECT name, description, kind, status, project_root FROM jobs WHERE id = ?",
                         (self.editing_job_id,)
                     ).fetchone()
                     if old is None:
                         raise ValueError("Der bearbeitete Auftrag wurde nicht gefunden.")
-                    if (name, description, kind) == old[:3]:
+                    if (name, description, kind, project_root) == (old[0], old[1], old[2], old[4]):
                         QMessageBox.information(self, "Unverändert", "Es wurden keine Änderungen vorgenommen.")
                         return
                     self.db.execute(
                         """INSERT INTO job_revisions
                            (job_id, saved_at, name, description, kind, status)
                            VALUES (?, ?, ?, ?, ?, ?)""",
-                        (self.editing_job_id, now, *old)
+                        (self.editing_job_id, now, *old[:4])
                     )
                     self.db.execute(
-                        "UPDATE jobs SET name=?, description=?, kind=?, status=? WHERE id=?",
-                        (name, description, kind, "QUEUED", self.editing_job_id)
+                        "UPDATE jobs SET name=?, description=?, kind=?, status=?, project_root=? WHERE id=?",
+                        (name, description, kind, "QUEUED", project_root, self.editing_job_id)
                     )
                 else:
                     self.db.execute(
-                        "INSERT INTO jobs (id, created_at, name, description, kind, status) VALUES (?, ?, ?, ?, ?, ?)",
-                        (str(uuid.uuid4()), now, name, description, kind, "QUEUED")
+                        "INSERT INTO jobs (id, created_at, name, description, kind, status, project_root) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (str(uuid.uuid4()), now, name, description, kind, "QUEUED", project_root)
                     )
         except (sqlite3.Error, ValueError) as exc:
             QMessageBox.critical(self, "Speicherfehler", str(exc))
             return
         self.clear_editor()
         self.refresh()
+        self.refresh_prompt_jobs()
 
     def simulate_job(self):
         job_id = self.selected_job_id()
