@@ -7,7 +7,9 @@ import urllib.error
 class ModelError(RuntimeError):
     pass
 
-def generate(provider, model, system_prompt, user_prompt, timeout=45, api_key=None):
+def generate(provider, model, system_prompt, user_prompt, timeout=180, api_key=None, max_output_tokens=12000):
+    if not isinstance(max_output_tokens, int) or not 1024 <= max_output_tokens <= 65536:
+        raise ModelError('Output-Tokenbudget muss zwischen 1024 und 65536 liegen.')
     if not model or not model.strip():
         raise ModelError("Bitte Modellnamen angeben.")
     if provider == "OpenAI":
@@ -17,13 +19,13 @@ def generate(provider, model, system_prompt, user_prompt, timeout=45, api_key=No
         url = "https://api.openai.com/v1/responses"
         headers = {"Authorization": "Bearer " + key}
         payload = {"model": model.strip(), "instructions": system_prompt,
-                   "input": user_prompt, "max_output_tokens": 1400, "store": False}
+                   "input": user_prompt, "max_output_tokens": max_output_tokens, "store": False}
     elif provider == "LM Studio (lokal)":
         url = "http://127.0.0.1:1234/v1/chat/completions"
         headers = {}
         payload = {"model": model.strip(), "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}], "max_tokens": 1400}
+            {"role": "user", "content": user_prompt}], "max_tokens": max_output_tokens}
     else:
         raise ModelError("Unbekannter Modellanbieter.")
     body = json.dumps(payload).encode("utf-8")
@@ -45,5 +47,18 @@ def generate(provider, model, system_prompt, user_prompt, timeout=45, api_key=No
         choices = data.get("choices", [])
         result = choices[0].get("message", {}).get("content", "").strip() if choices else ""
     if not result:
-        raise ModelError("Der Anbieter hat keinen Text zurückgegeben.")
+        if provider == "OpenAI":
+            details = data.get("incomplete_details") or {}
+            if data.get("status") == "incomplete" and details.get("reason") == "max_output_tokens":
+                raise ModelError(
+                    f"Output-Tokenlimit ({max_output_tokens}) erreicht, ohne sichtbare Antwort. "
+                    "Bitte Tokenbudget erhöhen oder ein weniger aufwendiges Modell wählen."
+                )
+            if data.get("error"):
+                raise ModelError("OpenAI meldet einen Fehler in der Antwort.")
+            raise ModelError(
+                f"OpenAI hat keinen sichtbaren Antworttext geliefert (Status: {data.get('status', 'unbekannt')}). "
+                "Bitte Modell und Tokenbudget prüfen."
+            )
+        raise ModelError("Der lokale Anbieter hat keinen Text zurückgegeben.")
     return result
