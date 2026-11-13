@@ -800,15 +800,18 @@ class MainWindow(QMainWindow):
         """Read-only overview; no API calls, workflow transitions or file writes."""
         project_count = self.db.execute("SELECT COUNT(*) FROM imported_projects").fetchone()[0]
         job_count = self.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
-        ready_count = self.db.execute("SELECT COUNT(*) FROM jobs WHERE status='READY'").fetchone()[0]
+        ready_count = self.db.execute(
+            "SELECT COUNT(*) FROM job_workflows WHERE status='READY'"
+        ).fetchone()[0]
         spend = self.db.execute("SELECT COALESCE(SUM(CAST(cost_usd AS REAL)), 0) FROM api_spend").fetchone()[0]
         self.dashboard_metrics.setText(
             f"Importierte Projekte: {project_count}     Entwicklungsaufträge: {job_count}     "
             f"READY-Aufträge: {ready_count}     Erfasste API-Kosten: {spend:.4f} USD"
         )
         rows = self.db.execute(
-            "SELECT name, status, COALESCE(project_root, ''), id "
-            "FROM jobs ORDER BY created_at DESC LIMIT 25"
+            "SELECT j.name, COALESCE(w.status, 'DRAFT'), COALESCE(j.project_root, ''), j.id "
+            "FROM jobs j LEFT JOIN job_workflows w ON w.job_id=j.id "
+            "ORDER BY j.created_at DESC LIMIT 25"
         ).fetchall()
         self.dashboard_jobs.setRowCount(len(rows))
         for row_index, (name, status, root, job_id) in enumerate(rows):
