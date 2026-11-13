@@ -923,9 +923,9 @@ class MainWindow(QMainWindow):
             self.project_generation_context = (job_id, root, info["commit"], self.stop_generation)
             self.project_generate_button.setEnabled(False)
             self.project_generation_preview.setPlainText("Projektvorschlag wird generiert …")
-            payload = ("PHASE A – TAXCALCULATOR. Freigegebener Entwicklungsauftrag:\\n" +
+            payload = ("PHASE A – TAXCALCULATOR. Freigegebener Entwicklungsauftrag:\n" +
                        state["final_prompt"] +
-                       "\\n\\nErzeuge einen zusammenhängenden, startfähigen Webanwendungs-Vorschlag. "
+                       "\n\nErzeuge einen zusammenhängenden, startfähigen Webanwendungs-Vorschlag. "
                        "Noch keine Berechnung mit unbelegten Steuer- oder Beitragssätzen.")
             self.project_generation_worker = ProjectGenerationWorker(
                 provider, self.prompt_model.currentText(), payload,
@@ -964,7 +964,7 @@ class MainWindow(QMainWindow):
             lines = [proposal["summary"], "", "VORSCHAU – KEINE DATEIEN GESCHRIEBEN", ""]
             for item in proposal["files"]:
                 lines.extend(["=" * 55, item["path"], "=" * 55, item["content"], ""])
-            self.project_generation_preview.setPlainText("\\n".join(lines))
+            self.project_generation_preview.setPlainText("\n".join(lines))
         except (ValueError, OSError, ProjectProposalError, sqlite3.Error) as exc:
             self.project_generation_preview.setPlainText("Projektvorschlag verworfen: " + str(exc))
 
