@@ -1,5 +1,6 @@
 """Dystenia Agent Factory: local, simulation-only MVP."""
 import sqlite3
+import os
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -19,7 +20,7 @@ from ai_proposal import parse_proposal, ProposalError
 from PySide6.QtCore import QThread, Signal
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPalette, QIcon
+from PySide6.QtGui import QColor, QPalette, QIcon, QShortcut, QKeySequence
 from PySide6.QtWidgets import (QApplication, QComboBox, QFormLayout, QHBoxLayout,
                                QLabel, QLineEdit, QMainWindow, QMessageBox,
                                QPushButton, QTableWidget, QTableWidgetItem,
@@ -185,9 +186,29 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(root)
         layout.setContentsMargins(18, 18, 18, 14)
         layout.setSpacing(12)
-        heading = QLabel("DYSTENIA AGENT FACTORY  ·  AUFTRAGSVERWALTUNG")
+        heading = QLabel("DYSTENIA AGENT FACTORY")
         heading.setStyleSheet("font-size: 17px; font-weight: 700; color: #00d4ff;")
-        layout.addWidget(heading)
+        header = QHBoxLayout()
+        header.addWidget(heading, 1)
+        self.hard_stop_button = QPushButton("⛔  NOT-AUS")
+        self.hard_stop_button.setToolTip(
+            "SOFORTSTOPP: Beendet den AgentFactory-Prozess ohne Rückfrage oder Speichern. "
+            "Alle lokalen Netzwerkverbindungen werden getrennt; ungespeicherte Daten gehen verloren."
+        )
+        self.hard_stop_button.setMinimumHeight(48)
+        self.hard_stop_button.setMinimumWidth(160)
+        self.hard_stop_button.setStyleSheet(
+            "QPushButton { background-color: #b91c1c; color: white; "
+            "border: 2px solid #f87171; border-radius: 7px; "
+            "font-size: 16px; font-weight: 800; padding: 8px 16px; } "
+            "QPushButton:hover { background-color: #dc2626; } "
+            "QPushButton:pressed { background-color: #7f1d1d; }"
+        )
+        self.hard_stop_button.clicked.connect(self.hard_emergency_stop)
+        header.addWidget(self.hard_stop_button)
+        layout.addLayout(header)
+        self.hard_stop_shortcut = QShortcut(QKeySequence("Ctrl+Shift+X"), self)
+        self.hard_stop_shortcut.activated.connect(self.hard_emergency_stop)
         form = QFormLayout()
         self.name = QLineEdit()
         self.name.setPlaceholderText("z. B. Log Analyzer")
@@ -499,13 +520,15 @@ class MainWindow(QMainWindow):
         system_layout.addWidget(self.output_budget)
         system_label("OpenAI API-Schlüssel")
         system_layout.addWidget(self.api_key)
-        system_label("Not-Aus · sperrt neue KI-Anfragen und Dateischreibvorgänge")
-        self.kill_switch = QPushButton("NOT-AUS AKTIVIEREN")
+        system_label("KI-Sperre · blockiert neue KI-Anfragen und Dateischreibvorgänge")
+        self.kill_switch = QPushButton("KI-SPERRE AKTIVIEREN")
         self.kill_switch.setCheckable(True)
         self.kill_switch.clicked.connect(self.toggle_emergency_stop)
         system_layout.addWidget(self.kill_switch)
         self.kill_status = QLabel("Status: bereit")
         system_layout.addWidget(self.kill_status)
+        system_label("Harter NOT-AUS: roter Button oben rechts, jederzeit erreichbar (Strg+Umschalt+X). "
+                     "Beendet die Anwendung ohne Rückfrage; ungespeicherte Änderungen gehen verloren.")
         system_label(
             "Laufende Netzwerkaufrufe können nicht garantiert abgebrochen werden; "
             "deren Ergebnisse werden nach Not-Aus verworfen. Keine automatische Dateiausführung."
@@ -561,9 +584,13 @@ class MainWindow(QMainWindow):
         self.refresh_prompt_jobs()
         self.refresh_existing_jobs()
 
+    def hard_emergency_stop(self):
+        """Immediate process termination; no Qt shutdown or worker wait."""
+        os._exit(137)
+
     def toggle_emergency_stop(self, checked):
         self.emergency_stop = bool(checked)
-        self.kill_switch.setText("NOT-AUS AUFHEBEN" if checked else "NOT-AUS AKTIVIEREN")
+        self.kill_switch.setText("KI-SPERRE AUFHEBEN" if checked else "KI-SPERRE AKTIVIEREN")
         self.kill_switch.setStyleSheet(
             "background-color: #991b1b; color: white;" if checked else ""
         )
