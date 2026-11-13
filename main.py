@@ -17,6 +17,7 @@ from controlled_edit import preview as preview_edit, apply as apply_edit, EditRe
 import hashlib
 import difflib
 from ai_proposal import parse_proposal, ProposalError
+from emergency_control import emergency
 from PySide6.QtCore import QThread, Signal
 
 from PySide6.QtCore import Qt
@@ -585,7 +586,8 @@ class MainWindow(QMainWindow):
         self.refresh_existing_jobs()
 
     def hard_emergency_stop(self):
-        """Immediate process termination; no Qt shutdown or worker wait."""
+        """Latch all local actions, terminate registered child trees, then exit."""
+        emergency.stop()
         os._exit(137)
 
     def toggle_emergency_stop(self, checked):
@@ -611,6 +613,7 @@ class MainWindow(QMainWindow):
             self.invalidate_prompt_preview()
 
     def ensure_running(self):
+        emergency.check()
         if self.emergency_stop:
             raise ValueError("NOT-AUS ist aktiv. Aktion gesperrt; unter System aufheben.")
 
@@ -926,6 +929,8 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "KI-Codevorschlag", message)
 
     def receive_ai_edit(self, raw):
+        if emergency.stopped:
+            return
         if self.emergency_stop or self.proposal_request_generation != self.stop_generation:
             self.proposal_context = None
             return
@@ -1142,6 +1147,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Kontextprüfung", str(exc))
 
     def send_prompt(self):
+        if emergency.stopped:
+            return
         if self.emergency_stop:
             QMessageBox.warning(self, "Not-Aus", "KI-Anfrage gesperrt.")
             return
@@ -1186,6 +1193,8 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def prompt_success(self, text):
+        if emergency.stopped:
+            return
         if self.emergency_stop or self.prompt_request_generation != self.stop_generation:
             self.workflow_request = None
             return
