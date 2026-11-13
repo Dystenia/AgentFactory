@@ -313,7 +313,7 @@ class MainWindow(QMainWindow):
         bind_project.clicked.connect(self.bind_selected_project)
         prompt_layout.addWidget(bind_project)
         open_projects = QPushButton("Codeprojekt importieren / auswählen")
-        open_projects.clicked.connect(lambda: self.tabs.setCurrentIndex(1))
+        open_projects.clicked.connect(lambda: self.tabs.setCurrentIndex(2))
         prompt_layout.addWidget(open_projects)
         prompt_layout.addWidget(QLabel("Projektzuordnung ist erst nach dem Speichern verbindlich. Änderungen widerrufen READY."))
         prompt_layout.addWidget(QLabel("KI-Arbeitsmodus"))
@@ -586,6 +586,11 @@ class MainWindow(QMainWindow):
         self.invalidate_prompt_preview()
         self.load_workflow()
 
+    def default_project_index(self, combo):
+        """Choose the sole imported project for new jobs, not existing jobs."""
+        roots = [combo.itemData(i) for i in range(combo.count()) if combo.itemData(i)]
+        return combo.findData(roots[0]) if len(roots) == 1 else 0
+
     def refresh_prompt_projects(self):
         previous = self.prompt_project.currentData()
         self.prompt_project.blockSignals(True)
@@ -598,8 +603,8 @@ class MainWindow(QMainWindow):
             idx = self.prompt_project.findData(previous)
             if idx >= 0:
                 self.prompt_project.setCurrentIndex(idx)
-        elif self.prompt_project.count() > 1:
-            self.prompt_project.setCurrentIndex(1)
+        else:
+            self.prompt_project.setCurrentIndex(self.default_project_index(self.prompt_project))
         self.prompt_project.blockSignals(False)
         self.send_button.setEnabled(False)
         if hasattr(self, "job_project"):
@@ -611,7 +616,8 @@ class MainWindow(QMainWindow):
                 "SELECT name, root FROM imported_projects ORDER BY imported_at DESC"
             ):
                 self.job_project.addItem(name, root)
-            index = self.job_project.findData(previous_job_project) if previous_job_project else 0
+            index = (self.job_project.findData(previous_job_project)
+                     if previous_job_project else self.default_project_index(self.job_project))
             self.job_project.setCurrentIndex(max(0, index))
             self.job_project.blockSignals(False)
 
@@ -802,7 +808,12 @@ class MainWindow(QMainWindow):
             raise ValueError("Der finale Auftrag wurde verändert; bitte erneut speichern und freigeben.")
         row = self.db.execute("SELECT project_root FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not row or not row[0]:
-            raise ValueError("Dem Auftrag ist kein Git-Projekt zugeordnet.")
+            raise ValueError(
+                "Dieser Auftrag hat noch keine gespeicherte Projektzuordnung. "
+                "Wähle oben das importierte Projekt und klicke auf "
+                "'Projekt dem ausgewählten Auftrag verbindlich zuordnen'. "
+                "Eine bestehende Freigabe muss danach erneut bestätigt werden."
+            )
         return job_id, row[0]
 
     def preview_approved_edit(self):
@@ -1161,7 +1172,7 @@ class MainWindow(QMainWindow):
         self.editing_job_id = None
         self.name.clear()
         self.kind.setCurrentIndex(0)
-        self.job_project.setCurrentIndex(0)
+        self.job_project.setCurrentIndex(self.default_project_index(self.job_project))
         self.description.clear()
         self.edit_label.setText("NEUER AUFTRAG")
         self.save_button.setText("Neuen Auftrag speichern")
