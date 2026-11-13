@@ -582,7 +582,13 @@ class MainWindow(QMainWindow):
             try:
                 record = self.db.execute("SELECT report_json FROM imported_projects WHERE root=?", (identity[1],)).fetchone()
                 validate_project_root(identity[1])
-                current = build_request(identity[0], collect_context(identity[1], json.loads(record[0])))
+                current_task = identity[0]
+                if self.workflow_request and self.workflow_request[0] == "final":
+                    state = job_workflow.get(self.db, self.workflow_request[1])
+                    if state and state["status"] in ("ANSWERED", "FINAL_REVIEW", "READY"):
+                        current_task += "\n\nBESTÄTIGTE ANTWORTEN DES BENUTZERS:\n" + state["answers"]
+                        current_task += "\n\nBISHERIGE RÜCKFRAGEN:\n" + state["questions"]
+                current = build_request(current_task, collect_context(identity[1], json.loads(record[0])))
                 if current != self.prepared_payload:
                     self.send_button.setEnabled(False)
                     QMessageBox.warning(self, "Projekt geändert", "Projektkontext wurde seit der Vorschau geändert. Bitte erneut vorbereiten.")
