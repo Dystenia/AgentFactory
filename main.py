@@ -10,6 +10,7 @@ from prompt_context import collect_context, build_request, SYSTEM_PROMPT
 from model_router import generate, list_openai_models, ModelError
 from project_analysis import MODES, system_prompt_for
 from project_access import validate_project_root
+import job_workflow
 from PySide6.QtCore import QThread, Signal
 
 from PySide6.QtCore import Qt
@@ -101,6 +102,7 @@ def connect_db():
     columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
     if "project_root" not in columns:
         conn.execute("ALTER TABLE jobs ADD COLUMN project_root TEXT")
+    job_workflow.migrate(conn)
     conn.commit()
     return conn
 
@@ -140,8 +142,9 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.db = connect_db()
-        self.setWindowTitle("Dystenia Agent Factory · MVP 0.3.6")
+        self.setWindowTitle("Dystenia Agent Factory · MVP 0.4.0-dev")
         self.editing_job_id = None
+        self.workflow_request = None
         # Native decorated Windows window; keep it inside the usable desktop area.
         self.setWindowFlags(Qt.Window)
         self.setMinimumSize(560, 400)
@@ -317,6 +320,39 @@ class MainWindow(QMainWindow):
         self.prompt_result.setReadOnly(True)
         prompt_layout.addWidget(QLabel("KI-Ergebnis (nur Vorschlag, keine Ausführung)"))
         prompt_layout.addWidget(self.prompt_result)
+        prompt_layout.addWidget(QLabel("Anforderungsklärung · Fragen getrennt vom finalen Prompt"))
+        self.clarification_questions = QTextEdit()
+        self.clarification_questions.setReadOnly(True)
+        self.clarification_questions.setPlaceholderText("Hier erscheinen die von der KI erkannten Rückfragen.")
+        prompt_layout.addWidget(self.clarification_questions)
+        self.clarification_answers = QTextEdit()
+        self.clarification_answers.setPlaceholderText("Antworten zu den Fragen; bei keinen Rückfragen ausdrücklich 'Keine Rückfragen' eintragen.")
+        prompt_layout.addWidget(self.clarification_answers)
+        clarify_actions = QHBoxLayout()
+        check_questions = QPushButton("1 · Rückfragen mit KI prüfen")
+        check_questions.clicked.connect(self.request_clarification)
+        clarify_actions.addWidget(check_questions)
+        save_answers = QPushButton("2 · Antworten speichern")
+        save_answers.clicked.connect(self.store_clarification_answers)
+        clarify_actions.addWidget(save_answers)
+        prompt_layout.addLayout(clarify_actions)
+        self.final_prompt = QTextEdit()
+        self.final_prompt.setPlaceholderText("Finaler Auftrag: KI-Vorschlag prüfen und bei Bedarf bearbeiten.")
+        prompt_layout.addWidget(QLabel("Finaler Entwicklungsauftrag · vor Freigabe editierbar"))
+        prompt_layout.addWidget(self.final_prompt)
+        final_actions = QHBoxLayout()
+        make_final = QPushButton("3 · Finalen Prompt mit KI erstellen")
+        make_final.clicked.connect(self.request_final_prompt)
+        final_actions.addWidget(make_final)
+        save_final = QPushButton("4 · Finalen Prompt speichern")
+        save_final.clicked.connect(self.store_final_prompt)
+        final_actions.addWidget(save_final)
+        approve_final = QPushButton("5 · Auftrag freigeben (READY)")
+        approve_final.clicked.connect(self.approve_final_prompt)
+        final_actions.addWidget(approve_final)
+        prompt_layout.addLayout(final_actions)
+        self.workflow_status = QLabel("Workflow: Bitte gespeicherten Auftrag auswählen")
+        prompt_layout.addWidget(self.workflow_status)
         tabs.addTab(self.scroll_tab(prompt_tab), "Prompt Studio")
         layout.addWidget(tabs)
         self.setCentralWidget(root)
@@ -363,6 +399,7 @@ class MainWindow(QMainWindow):
             project_index = self.prompt_project.findData(record[1] or "")
             self.prompt_project.setCurrentIndex(max(0, project_index))
         self.invalidate_prompt_preview()
+        self.load_workflow()
 
     def refresh_prompt_projects(self):
         previous = self.prompt_project.currentData()
@@ -427,6 +464,87 @@ class MainWindow(QMainWindow):
         self.prompt_model.blockSignals(False)
         self.send_button.setEnabled(False)
 
+    def active_workflow(self):
+        job_id = self.prompt_job.currentData()
+        if not job_id:
+            raise ValueError("Bitte zuerst einen gespeicherten Entwicklungsauftrag auswählen.")
+        row = self.db.execute("SELECT description, project_root FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not row:
+            raise ValueError("Entwicklungsauftrag nicht gefunden.")
+        if row[0] != self.prompt_task.toPlainText():
+            raise ValueError("Der Originalauftrag weicht vom gespeicherten Auftrag ab. Bitte zuerst in der Auftragsverwaltung speichern.")
+        if (row[1] or "") != (self.prompt_project.currentData() or ""):
+            raise ValueError("Projektzuordnung weicht vom gespeicherten Auftrag ab. Bitte zuerst in der Auftragsverwaltung speichern.")
+        return job_id, row[0]
+
+    def load_workflow(self):
+        job_id = self.prompt_job.currentData()
+        state = job_workflow.get(self.db, job_id) if job_id else None
+        self.clarification_questions.setPlainText(state["questions"] if state else "")
+        self.clarification_answers.setPlainText(state["answers"] if state else "")
+        self.final_prompt.setPlainText(state["final_prompt"] if state else "")
+        self.workflow_status.setText("Workflow: " + (state["status"] if state else "DRAFT / kein Auftrag"))
+
+    def request_clarification(self):
+        try:
+            job_id, source = self.active_workflow()
+            job_workflow.ensure(self.db, job_id, source)
+            self.prompt_mode.setCurrentText("Anforderungen klären")
+            self.prepare_prompt()
+            if not self.send_button.isEnabled():
+                return
+            self.workflow_request = ("questions", job_id, source)
+            self.send_prompt()
+        except (ValueError, sqlite3.Error) as exc:
+            QMessageBox.warning(self, "Anforderungsklärung", str(exc))
+
+    def store_clarification_answers(self):
+        try:
+            job_id, source = self.active_workflow()
+            job_workflow.ensure(self.db, job_id, source)
+            job_workflow.save_answers(self.db, job_id, self.clarification_answers.toPlainText())
+            self.load_workflow()
+        except (ValueError, sqlite3.Error) as exc:
+            QMessageBox.warning(self, "Antworten", str(exc))
+
+    def request_final_prompt(self):
+        try:
+            job_id, source = self.active_workflow()
+            state = job_workflow.ensure(self.db, job_id, source)
+            if state["status"] not in ("ANSWERED", "FINAL_REVIEW", "READY"):
+                raise ValueError("Bitte zuerst die Rückfragen prüfen und beantworten.")
+            self.prompt_mode.setCurrentText("Prompt optimieren")
+            self.prepare_prompt()
+            if not self.send_button.isEnabled():
+                return
+            self.workflow_request = ("final", job_id, source)
+            self.send_prompt()
+        except (ValueError, sqlite3.Error) as exc:
+            QMessageBox.warning(self, "Finaler Auftrag", str(exc))
+
+    def store_final_prompt(self):
+        try:
+            job_id, source = self.active_workflow()
+            job_workflow.ensure(self.db, job_id, source)
+            job_workflow.save_final(self.db, job_id, self.final_prompt.toPlainText())
+            self.load_workflow()
+        except (ValueError, sqlite3.Error) as exc:
+            QMessageBox.warning(self, "Finaler Auftrag", str(exc))
+
+    def approve_final_prompt(self):
+        try:
+            job_id, source = self.active_workflow()
+            job_workflow.ensure(self.db, job_id, source)
+            answer = QMessageBox.question(self, "Freigabe",
+                "Diesen finalen Entwicklungsauftrag als READY freigeben? Es werden keine Dateien geändert.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
+            job_workflow.approve(self.db, job_id, self.final_prompt.toPlainText())
+            self.load_workflow()
+        except (ValueError, sqlite3.Error) as exc:
+            QMessageBox.warning(self, "Freigabe", str(exc))
+
     def prepare_prompt(self):
         try:
             root = self.prompt_project.currentData()
@@ -437,7 +555,13 @@ class MainWindow(QMainWindow):
                     raise ValueError("Projekt nicht gefunden.")
                 validate_project_root(root)
                 context = collect_context(root, json.loads(row[0]))
-            self.prepared_payload = build_request(self.prompt_task.toPlainText(), context)
+            task = self.prompt_task.toPlainText()
+            if self.prompt_mode.currentText() == "Prompt optimieren" and self.workflow_request and self.workflow_request[0] == "final":
+                state = job_workflow.get(self.db, self.workflow_request[1])
+                if state and state["status"] in ("ANSWERED", "FINAL_REVIEW", "READY"):
+                    task += "\\n\\nBESTÄTIGTE ANTWORTEN DES BENUTZERS:\\n" + state["answers"]
+                    task += "\\n\\nBISHERIGE RÜCKFRAGEN:\\n" + state["questions"]
+            self.prepared_payload = build_request(task, context)
             self.prepared_identity = (self.prompt_task.toPlainText(), root, self.prompt_provider.currentText(), self.prompt_model.currentText(), self.prompt_mode.currentText(), self.output_budget.currentText())
             self.context_preview.setPlainText(self.prepared_payload)
             self.send_button.setEnabled(True)
@@ -468,6 +592,7 @@ class MainWindow(QMainWindow):
             "\n\nDer angezeigte Auftrag und Projektkontext werden an diesen Anbieter gesendet. Fortfahren?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply != QMessageBox.Yes:
+            self.workflow_request = None
             return
         self.send_button.setEnabled(False)
         self.prompt_result.setPlainText("Anfrage läuft …")
@@ -479,8 +604,24 @@ class MainWindow(QMainWindow):
 
     def prompt_success(self, text):
         self.prompt_result.setPlainText(text)
+        request = self.workflow_request
+        self.workflow_request = None
+        if not request:
+            return
+        action, job_id, source = request
+        try:
+            if action == "questions":
+                job_workflow.save_questions(self.db, job_id, source, text)
+            elif action == "final":
+                state = job_workflow.get(self.db, job_id)
+                if state and state["source_description"] == source:
+                    self.final_prompt.setPlainText(text)
+            self.load_workflow()
+        except (ValueError, sqlite3.Error) as exc:
+            QMessageBox.warning(self, "Workflow", str(exc))
 
     def prompt_failure(self, error):
+        self.workflow_request = None
         self.prompt_result.setPlainText("Fehler: " + error)
 
     def choose_project(self):
