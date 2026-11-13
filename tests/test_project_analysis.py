@@ -3,8 +3,8 @@ from project_analysis import MODES, system_prompt_for
 
 class ProjectAnalysisTests(unittest.TestCase):
     def test_modes_have_separate_instructions(self):
-        self.assertEqual(len(MODES), 3)
-        self.assertNotEqual(system_prompt_for("Projekt analysieren"), system_prompt_for("Änderungsplan erstellen"))
+        self.assertEqual(set(MODES), {"Prompt optimieren", "Projekt analysieren", "Änderungsplan erstellen", "Anforderungen klären", "Finalen Auftrag erstellen"})
+        self.assertEqual(len(set(MODES.values())), len(MODES))
     def test_unknown_mode_rejected(self):
         with self.assertRaises(ValueError):
             system_prompt_for("Sicherheitsregeln abschalten")
