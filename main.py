@@ -17,6 +17,7 @@ from controlled_edit import preview as preview_edit, apply as apply_edit, EditRe
 import hashlib
 import difflib
 from ai_proposal import parse_proposal, ProposalError
+from project_proposal import parse_project_proposal, ProjectProposalError
 from emergency_control import emergency
 from PySide6.QtCore import QThread, Signal
 
@@ -151,6 +152,35 @@ class ProposalWorker(QThread):
             self.succeeded.emit(result)
         except Exception as exc:
             self.failed.emit(str(exc) if isinstance(exc, ModelError) else "KI-Anfrage fehlgeschlagen.")
+
+
+class ProjectGenerationWorker(QThread):
+    succeeded = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, provider, model, payload, api_key, budget):
+        super().__init__()
+        self.provider, self.model, self.payload = provider, model, payload
+        self.api_key, self.budget = api_key, budget
+
+    def run(self):
+        try:
+            result = generate(
+                self.provider, self.model,
+                "Du entwickelst ein Python-Webprojekt. Gib AUSSCHLIESSLICH ein JSON-Objekt "
+                "mit exakt summary (String) und files (Liste) zurück. "
+                "Jede Datei hat exakt path (relativer POSIX-Pfad) und content (vollständiger UTF-8-Text). "
+                "Maximal 12 Dateien. Keine Markdown-Codeblöcke. Keine geheimen Schlüssel. "
+                "Keine erfundenen Steuersätze oder Versicherungsbeiträge. "
+                "Phase A: lauffähige FastAPI-Weboberfläche, Eingabevalidierung, Datenmodelle, "
+                "README und Tests; Steuerberechnung nur als explizit nicht implementiert kennzeichnen. "
+                "Die Rentenversicherungspflicht bei Selbstständigen wird vom Benutzer gesetzt, "
+                "nicht rechtlich automatisch festgestellt.",
+                self.payload, api_key=self.api_key, max_output_tokens=self.budget
+            )
+            self.succeeded.emit(result)
+        except Exception as exc:
+            self.failed.emit(str(exc) if isinstance(exc, ModelError) else "Projektgenerierung fehlgeschlagen.")
 
 
 class ModelListWorker(QThread):
@@ -486,6 +516,14 @@ class MainWindow(QMainWindow):
         self.proposal_button = QPushButton("KI-Änderung für diese Datei vorschlagen")
         self.proposal_button.clicked.connect(self.request_ai_edit)
         prompt_layout.addWidget(self.proposal_button)
+        self.project_generate_button = QPushButton("Phase A · Vollständigen Projektvorschlag generieren (nur Vorschau)")
+        self.project_generate_button.clicked.connect(self.request_project_generation)
+        prompt_layout.addWidget(self.project_generate_button)
+        self.project_generation_preview = QTextEdit()
+        self.project_generation_preview.setReadOnly(True)
+        self.project_generation_preview.setPlaceholderText("Hier erscheinen die vorgeschlagenen Projektdateien. Es wird nichts geschrieben.")
+        self.project_generation_preview.setMinimumHeight(200)
+        prompt_layout.addWidget(self.project_generation_preview)
         prompt_layout.addStretch()
         self.show_workflow_step(0)
         self.prompt_tab_index = tabs.addTab(prompt_tab, "Entwicklungsassistent")
@@ -862,6 +900,73 @@ class MainWindow(QMainWindow):
         except (ValueError, OSError, sqlite3.Error) as exc:
             self.git_preflight_result.setPlainText("")
             QMessageBox.warning(self, "Git-Projektprüfung", str(exc))
+
+    def request_project_generation(self):
+        try:
+            self.ensure_running()
+            job_id, root = self._approved_edit_context()
+            info = git_preflight(root)
+            if not info["clean"]:
+                raise ValueError("Das Git-Projekt muss vor der Generierung sauber sein.")
+            state = job_workflow.get(self.db, job_id)
+            if not state or not state["final_prompt"]:
+                raise ValueError("Ein freigegebener finaler Auftrag ist erforderlich.")
+            provider = self.prompt_provider.currentText()
+            if QMessageBox.question(
+                self, "Phase A – Projektvorschlag",
+                "Der freigegebene Auftrag wird an " + provider +
+                " gesendet. Die KI erstellt bis zu 12 Dateien als Vorschlag. "
+                "Es werden keine Dateien geschrieben. Fortfahren?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            ) != QMessageBox.Yes:
+                return
+            self.project_generation_context = (job_id, root, info["commit"], self.stop_generation)
+            self.project_generate_button.setEnabled(False)
+            self.project_generation_preview.setPlainText("Projektvorschlag wird generiert …")
+            payload = ("PHASE A – TAXCALCULATOR. Freigegebener Entwicklungsauftrag:\\n" +
+                       state["final_prompt"] +
+                       "\\n\\nErzeuge einen zusammenhängenden, startfähigen Webanwendungs-Vorschlag. "
+                       "Noch keine Berechnung mit unbelegten Steuer- oder Beitragssätzen.")
+            self.project_generation_worker = ProjectGenerationWorker(
+                provider, self.prompt_model.currentText(), payload,
+                self.api_key.text().strip() if provider == "OpenAI" else None,
+                int(self.output_budget.currentText()))
+            self.project_generation_worker.succeeded.connect(self.receive_project_generation)
+            self.project_generation_worker.failed.connect(self.fail_project_generation)
+            self.project_generation_worker.finished.connect(self.project_generation_worker.deleteLater)
+            self.project_generation_worker.start()
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            QMessageBox.warning(self, "Projektgenerierung", str(exc))
+
+    def fail_project_generation(self, message):
+        self.project_generate_button.setEnabled(True)
+        self.project_generation_context = None
+        if not emergency.stopped and not self.emergency_stop:
+            QMessageBox.warning(self, "Projektgenerierung", message)
+
+    def receive_project_generation(self, raw):
+        self.project_generate_button.setEnabled(True)
+        context = getattr(self, "project_generation_context", None)
+        self.project_generation_context = None
+        if emergency.stopped or self.emergency_stop or not context:
+            return
+        try:
+            job_id, root, commit, generation = context
+            if generation != self.stop_generation:
+                return
+            current_job, current_root = self._approved_edit_context()
+            if (current_job, current_root) != (job_id, root):
+                raise ValueError("Auftrag oder Projekt wurde während der Anfrage gewechselt.")
+            info = git_preflight(root)
+            if not info["clean"] or info["commit"] != commit:
+                raise ValueError("Git-Zustand hat sich während der Generierung verändert.")
+            proposal = parse_project_proposal(raw)
+            lines = [proposal["summary"], "", "VORSCHAU – KEINE DATEIEN GESCHRIEBEN", ""]
+            for item in proposal["files"]:
+                lines.extend(["=" * 55, item["path"], "=" * 55, item["content"], ""])
+            self.project_generation_preview.setPlainText("\\n".join(lines))
+        except (ValueError, OSError, ProjectProposalError, sqlite3.Error) as exc:
+            self.project_generation_preview.setPlainText("Projektvorschlag verworfen: " + str(exc))
 
     def request_ai_edit(self):
         try:
