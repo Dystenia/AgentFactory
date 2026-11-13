@@ -671,33 +671,37 @@ class MainWindow(QMainWindow):
         dashboard_title.setStyleSheet("font-size: 19px; font-weight: 700; color: #67e8f9;")
         dashboard_layout.addWidget(dashboard_title)
         dashboard_layout.addWidget(QLabel("Lokaler Status deiner Projekte, Aufträge und erfassten API-Kosten"))
-        self.dashboard_metrics = QLabel()
-        self.dashboard_metrics.setWordWrap(True)
-        self.dashboard_metrics.setStyleSheet(
-            "background-color: #1d2430; border: 1px solid #344154; "
-            "border-radius: 8px; padding: 16px; font-size: 14px;"
-        )
-        dashboard_layout.addWidget(self.dashboard_metrics)
-        dashboard_layout.addWidget(QLabel("Zuletzt angelegte Entwicklungsaufträge"))
+        metrics_row = QHBoxLayout()
+        self.dashboard_metric_values = []
+        for title in ("PROJEKTE", "AUFTRÄGE", "FREIGEGEBEN", "API-KOSTEN"):
+            card = QGroupBox(title)
+            card_layout = QVBoxLayout(card)
+            value = QLabel("–")
+            value.setStyleSheet("font-size: 23px; font-weight: 700; color: #e6edf3;")
+            card_layout.addWidget(value)
+            metrics_row.addWidget(card, 1)
+            self.dashboard_metric_values.append(value)
+        dashboard_layout.addLayout(metrics_row)
+        recent_header = QHBoxLayout()
+        recent_header.addWidget(QLabel("Zuletzt angelegte Entwicklungsaufträge"))
+        recent_header.addStretch()
+        refresh_dashboard = QPushButton("Aktualisieren")
+        refresh_dashboard.clicked.connect(self.refresh_dashboard)
+        recent_header.addWidget(refresh_dashboard)
+        dashboard_layout.addLayout(recent_header)
         self.dashboard_jobs = QTableWidget(0, 3)
         self.dashboard_jobs.setHorizontalHeaderLabels(["Auftrag", "Status", "Projekt"])
         self.dashboard_jobs.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.dashboard_jobs.setSelectionBehavior(QTableWidget.SelectRows)
         self.dashboard_jobs.setEditTriggers(QTableWidget.NoEditTriggers)
         self.dashboard_jobs.setAlternatingRowColors(True)
+        self.dashboard_jobs.setMaximumHeight(330)
         self.dashboard_jobs.cellDoubleClicked.connect(self.open_dashboard_job)
-        dashboard_layout.addWidget(self.dashboard_jobs, 1)
-        dashboard_actions = QHBoxLayout()
-        for label, target in (("Auftrag erstellen", 0), ("Aufträge öffnen", 1),
-                              ("Projekte öffnen", 2), ("KI-Entwicklung", 3),
-                              ("Einstellungen", 4)):
-            action = QPushButton(label)
-            action.clicked.connect(lambda checked=False, page=target: self.tabs.setCurrentIndex(page))
-            dashboard_actions.addWidget(action)
-        dashboard_layout.addLayout(dashboard_actions)
-        refresh_dashboard = QPushButton("Übersicht aktualisieren")
-        refresh_dashboard.clicked.connect(self.refresh_dashboard)
-        dashboard_layout.addWidget(refresh_dashboard)
+        dashboard_layout.addWidget(self.dashboard_jobs)
+        dashboard_tip = QLabel("Doppelklick auf einen Auftrag öffnet ihn direkt im Entwicklungsassistenten.")
+        dashboard_tip.setStyleSheet("color: #94a3b8;")
+        dashboard_layout.addWidget(dashboard_tip)
+        dashboard_layout.addStretch(1)
         self.dashboard_index = tabs.addTab(self.scroll_tab(dashboard), "Übersicht")
         # Navigation uses the existing tab pages, preserving their widgets and signals.
         self.nav_expanded = True
@@ -740,6 +744,9 @@ class MainWindow(QMainWindow):
             button.clicked.connect(lambda checked=False, phase=step: self.open_workflow_phase(phase))
             self.nav_layout.addWidget(button)
             self.workflow_nav_buttons.append(button)
+        self.workflow_nav_visible = False
+        for button in self.workflow_nav_buttons:
+            button.hide()
         self.nav_layout.addStretch()
         tabs.tabBar().hide()
         tabs.currentChanged.connect(self.update_navigation_selection)
@@ -753,6 +760,7 @@ class MainWindow(QMainWindow):
             "border-radius: 6px; padding: 9px; color: #e6edf3; }"
         )
         layout.addWidget(self.context_strip)
+        self.context_strip.hide()
         self.prompt_job.currentIndexChanged.connect(self.update_context_strip)
         self.prompt_project.currentIndexChanged.connect(self.update_context_strip)
         self.prompt_provider.currentTextChanged.connect(self.update_context_strip)
@@ -804,10 +812,10 @@ class MainWindow(QMainWindow):
             "SELECT COUNT(*) FROM job_workflows WHERE status='READY'"
         ).fetchone()[0]
         spend = self.db.execute("SELECT COALESCE(SUM(CAST(cost_usd AS REAL)), 0) FROM api_spend").fetchone()[0]
-        self.dashboard_metrics.setText(
-            f"Importierte Projekte: {project_count}     Entwicklungsaufträge: {job_count}     "
-            f"READY-Aufträge: {ready_count}     Erfasste API-Kosten: {spend:.4f} USD"
-        )
+        for label, value in zip(self.dashboard_metric_values, (
+            str(project_count), str(job_count), str(ready_count), f"{spend:.4f} USD"
+        )):
+            label.setText(value)
         rows = self.db.execute(
             "SELECT j.name, COALESCE(w.status, 'DRAFT'), COALESCE(j.project_root, ''), j.id "
             "FROM jobs j LEFT JOIN job_workflows w ON w.job_id=j.id "
@@ -909,11 +917,15 @@ class MainWindow(QMainWindow):
 
     def update_navigation_selection(self, index):
         for button in self.nav_buttons:
-            button.setChecked(button.property("pageIndex") == index)
+            selected = button.property("pageIndex") == index
+            button.setChecked(selected)
             button.setStyleSheet(
                 "QPushButton { text-align: left; background-color: #164e63; border-color: #0891b2; }"
-                if button.property("pageIndex") == index else "QPushButton { text-align: left; }"
+                if selected else "QPushButton { text-align: left; }"
             )
+        self.context_strip.setVisible(index == self.prompt_tab_index)
+        for button in self.workflow_nav_buttons:
+            button.setVisible(index == self.prompt_tab_index and self.nav_expanded)
 
     @staticmethod
     def scroll_tab(widget, horizontal=True):
