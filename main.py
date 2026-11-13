@@ -223,7 +223,8 @@ class MainWindow(QMainWindow):
         scan.setObjectName("primaryButton")
         scan.clicked.connect(self.scan_project)
         import_layout.addWidget(scan)
-        import_layout.addWidget(QLabel("Gespeichertes Projekt auswählen"))
+        import_layout.addWidget(QLabel("Gespeicherte Codeprojekte (nicht Entwicklungsaufträge)"))
+        import_layout.addWidget(QLabel("Hier erscheinen importierte lokale Projektordner. Entwicklungsaufträge findest du im ersten Reiter."))
         self.import_project = QComboBox()
         self.import_project.setMinimumWidth(240)
         self.import_project.currentIndexChanged.connect(self.select_imported_project)
@@ -263,7 +264,13 @@ class MainWindow(QMainWindow):
         reload_projects = QPushButton("Projektliste aktualisieren")
         reload_projects.clicked.connect(self.refresh_prompt_projects)
         prompt_layout.addWidget(reload_projects)
-        prompt_layout.addWidget(QLabel("Der Projektname wird angezeigt; der tatsächliche Pfad bleibt nur intern gespeichert."))
+        bind_project = QPushButton("Projekt dem ausgewählten Auftrag verbindlich zuordnen")
+        bind_project.clicked.connect(self.bind_selected_project)
+        prompt_layout.addWidget(bind_project)
+        open_projects = QPushButton("Codeprojekt importieren / auswählen")
+        open_projects.clicked.connect(lambda: self.tabs.setCurrentIndex(1))
+        prompt_layout.addWidget(open_projects)
+        prompt_layout.addWidget(QLabel("Projektzuordnung ist erst nach dem Speichern verbindlich. Änderungen widerrufen READY."))
         prompt_layout.addWidget(QLabel("KI-Arbeitsmodus"))
         self.prompt_mode = QComboBox()
         self.prompt_mode.addItems(list(MODES))
@@ -494,6 +501,33 @@ class MainWindow(QMainWindow):
         self.clarification_answers.setPlainText(state["answers"] if state else "")
         self.final_prompt.setPlainText(state["final_prompt"] if state else "")
         self.workflow_status.setText("Workflow: " + (state["status"] if state else "DRAFT / kein Auftrag"))
+
+    def bind_selected_project(self):
+        try:
+            job_id = self.prompt_job.currentData()
+            root = self.prompt_project.currentData()
+            if not job_id:
+                raise ValueError("Bitte zuerst einen gespeicherten Entwicklungsauftrag auswählen.")
+            if not root:
+                raise ValueError("Bitte ein importiertes Codeprojekt auswählen. Über 'Codeprojekt importieren / auswählen' gelangst du zur Projektverwaltung.")
+            row = self.db.execute("SELECT name FROM imported_projects WHERE root=?", (root,)).fetchone()
+            if not row:
+                raise ValueError("Das Codeprojekt wurde nicht gefunden.")
+            confirm = QMessageBox.question(
+                self, "Projekt verbindlich zuordnen",
+                "Projekt '" + row[0] + "' diesem Auftrag zuordnen?\\n"
+                "Eine bestehende READY-Freigabe wird widerrufen; der finale Prompt bleibt erhalten.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if confirm != QMessageBox.Yes:
+                return
+            changed = job_workflow.bind_project(self.db, job_id, root)
+            self.load_workflow()
+            self.git_preflight_result.clear()
+            QMessageBox.information(self, "Projektzuordnung",
+                "Projekt zugeordnet. Bitte finalen Auftrag erneut freigeben." if changed
+                else "Dieses Projekt ist bereits zugeordnet.")
+        except (ValueError, sqlite3.Error) as exc:
+            QMessageBox.warning(self, "Projektzuordnung", str(exc))
 
     def check_approved_project(self):
         try:
@@ -852,6 +886,14 @@ class MainWindow(QMainWindow):
                         "UPDATE jobs SET name=?, description=?, kind=?, status=?, project_root=? WHERE id=?",
                         (name, description, kind, "QUEUED", project_root, self.editing_job_id)
                     )
+                    if (old[2], old[4]) != (kind, project_root):
+                        state = job_workflow.get(self.db, self.editing_job_id)
+                        if state:
+                            status = "FINAL_REVIEW" if state["final_prompt"].strip() and old[2] == kind else "DRAFT"
+                            self.db.execute(
+                                "UPDATE job_workflows SET status=?, approved_at=NULL, updated_at=? WHERE job_id=?",
+                                (status, now, self.editing_job_id)
+                            )
                 else:
                     self.db.execute(
                         "INSERT INTO jobs (id, created_at, name, description, kind, status, project_root) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -863,6 +905,7 @@ class MainWindow(QMainWindow):
         self.clear_editor()
         self.refresh()
         self.refresh_prompt_jobs()
+        self.refresh_prompt_projects()
 
     def simulate_job(self):
         job_id = self.selected_job_id()
