@@ -912,7 +912,7 @@ class MainWindow(QMainWindow):
             button.setChecked(button.property("pageIndex") == index)
             button.setStyleSheet(
                 "QPushButton { text-align: left; background-color: #164e63; border-color: #0891b2; }"
-                if page == index else "QPushButton { text-align: left; }"
+                if button.property("pageIndex") == index else "QPushButton { text-align: left; }"
             )
 
     @staticmethod
