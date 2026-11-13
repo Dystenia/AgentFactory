@@ -514,7 +514,7 @@ class MainWindow(QMainWindow):
             state = job_workflow.ensure(self.db, job_id, source)
             if state["status"] not in ("ANSWERED", "FINAL_REVIEW", "READY"):
                 raise ValueError("Bitte zuerst die Rückfragen prüfen und beantworten.")
-            self.prompt_mode.setCurrentText("Prompt optimieren")
+            self.prompt_mode.setCurrentText("Finalen Auftrag erstellen")
             self.workflow_request = ("final", job_id, source)
             self.prepare_prompt()
             if not self.send_button.isEnabled():
@@ -558,7 +558,7 @@ class MainWindow(QMainWindow):
                 validate_project_root(root)
                 context = collect_context(root, json.loads(row[0]))
             task = self.prompt_task.toPlainText()
-            if self.prompt_mode.currentText() == "Prompt optimieren" and self.workflow_request and self.workflow_request[0] == "final":
+            if self.prompt_mode.currentText() == "Finalen Auftrag erstellen" and self.workflow_request and self.workflow_request[0] == "final":
                 state = job_workflow.get(self.db, self.workflow_request[1])
                 if state and state["status"] in ("ANSWERED", "FINAL_REVIEW", "READY"):
                     task += "\n\nBESTÄTIGTE ANTWORTEN DES BENUTZERS:\n" + state["answers"]
