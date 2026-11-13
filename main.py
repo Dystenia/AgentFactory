@@ -25,7 +25,7 @@ from PySide6.QtGui import QColor, QPalette, QIcon, QShortcut, QKeySequence
 from PySide6.QtWidgets import (QApplication, QComboBox, QFormLayout, QHBoxLayout,
                                QLabel, QLineEdit, QMainWindow, QMessageBox,
                                QPushButton, QTableWidget, QTableWidgetItem,
-                               QTextEdit, QVBoxLayout, QWidget, QFileDialog, QTabWidget, QScrollArea, QSizePolicy, QInputDialog, QStackedWidget)
+                               QTextEdit, QVBoxLayout, QWidget, QFileDialog, QTabWidget, QScrollArea, QSizePolicy, QInputDialog, QStackedWidget, QHeaderView)
 
 APP_DIR = Path(__file__).resolve().parent
 ICON_PATH = APP_DIR / "assets" / "dystenia_agent_factory.ico"
@@ -247,7 +247,9 @@ class MainWindow(QMainWindow):
         new_layout.addLayout(controls)
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["ID", "Projekt", "Typ", "Status"])
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.table.setWordWrap(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -282,7 +284,9 @@ class MainWindow(QMainWindow):
         import_layout.addWidget(self.import_project)
         self.imported_table = QTableWidget(0, 2)
         self.imported_table.setHorizontalHeaderLabels(["Projektname", "Projekt-ID"])
-        self.imported_table.horizontalHeader().setStretchLastSection(True)
+        self.imported_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.imported_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.imported_table.setWordWrap(True)
         self.imported_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.imported_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.imported_table.cellClicked.connect(self.show_imported_report)
