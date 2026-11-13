@@ -997,7 +997,6 @@ class MainWindow(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No
             ) != QMessageBox.Yes:
                 return
-            self.authorize_api_cost(provider, self.prompt_model.currentText(), state["final_prompt"], int(self.output_budget.currentText()))
             self.project_generation_context = (job_id, root, info["commit"], self.stop_generation)
             self.project_generate_button.setEnabled(False)
             self.project_generation_preview.setPlainText("Projektvorschlag wird generiert …")
@@ -1005,6 +1004,7 @@ class MainWindow(QMainWindow):
                        state["final_prompt"] +
                        "\n\nErzeuge einen zusammenhängenden, startfähigen Webanwendungs-Vorschlag. "
                        "Noch keine Berechnung mit unbelegten Steuer- oder Beitragssätzen.")
+            self.authorize_api_cost(provider, self.prompt_model.currentText(), payload, int(self.output_budget.currentText()))
             self.project_generation_worker = ProjectGenerationWorker(
                 provider, self.prompt_model.currentText(), payload,
                 self.api_key.text().strip() if provider == "OpenAI" else None,
