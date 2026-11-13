@@ -378,6 +378,19 @@ class MainWindow(QMainWindow):
             step_bar.addWidget(button)
         prompt_root.addLayout(step_bar)
         prompt_root.addWidget(self.workflow_pages, 1)
+        # Workflow navigation stays outside the scrollable phase pages.
+        phase_footer = QHBoxLayout()
+        self.phase_back_button = QPushButton("← Vorheriger Schritt")
+        self.phase_back_button.clicked.connect(lambda: self.move_workflow_phase(-1))
+        phase_footer.addWidget(self.phase_back_button)
+        self.phase_progress = QLabel()
+        self.phase_progress.setAlignment(Qt.AlignCenter)
+        phase_footer.addWidget(self.phase_progress, 1)
+        self.phase_next_button = QPushButton("Nächster Schritt →")
+        self.phase_next_button.setObjectName("primaryButton")
+        self.phase_next_button.clicked.connect(lambda: self.move_workflow_phase(1))
+        phase_footer.addWidget(self.phase_next_button)
+        prompt_root.addLayout(phase_footer)
 
         def new_step():
             page = QWidget()
@@ -740,7 +753,12 @@ class MainWindow(QMainWindow):
             raise ValueError("NOT-AUS ist aktiv. Aktion gesperrt; unter System aufheben.")
 
     def show_workflow_step(self, index):
+        if not 0 <= index < self.workflow_pages.count():
+            return
         self.workflow_pages.setCurrentIndex(index)
+        self.phase_back_button.setEnabled(index > 0)
+        self.phase_next_button.setEnabled(index < self.workflow_pages.count() - 1)
+        self.phase_progress.setText(f"Schritt {index + 1} von {self.workflow_pages.count()}")
         for step, button in enumerate(getattr(self, "workflow_nav_buttons", ())):
             button.setStyleSheet(
                 "QPushButton { text-align: left; background-color: #164e63; border-color: #0891b2; }"
@@ -752,6 +770,10 @@ class MainWindow(QMainWindow):
                 "QPushButton { background-color: #164e63; border-color: #0891b2; }"
                 if step == index else ""
             )
+
+    def move_workflow_phase(self, direction):
+        """Navigate without submitting requests or granting workflow approval."""
+        self.show_workflow_step(self.workflow_pages.currentIndex() + direction)
 
     def open_workflow_phase(self, phase):
         """Open a workflow phase while retaining the current job and project."""
