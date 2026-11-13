@@ -412,13 +412,66 @@ class MainWindow(QMainWindow):
         prompt_layout.addWidget(self.edit_diff)
         self.edit_approval_snapshot = None
         self.prompt_tab_index = tabs.addTab(self.scroll_tab(prompt_tab), "Prompt Studio")
-        layout.addWidget(tabs)
+        # Navigation uses the existing tab pages, preserving their widgets and signals.
+        self.nav_expanded = True
+        self.nav_panel = QWidget()
+        self.nav_panel.setObjectName("navigationPanel")
+        self.nav_panel.setFixedWidth(215)
+        self.nav_layout = QVBoxLayout(self.nav_panel)
+        self.nav_layout.setContentsMargins(6, 8, 6, 8)
+        self.nav_layout.setSpacing(6)
+        self.nav_toggle = QPushButton("☰  Menü einklappen")
+        self.nav_toggle.setToolTip("Seitennavigation ein- oder ausklappen")
+        self.nav_toggle.clicked.connect(self.toggle_navigation)
+        self.nav_layout.addWidget(self.nav_toggle)
+        self.nav_buttons = []
+        navigation = [
+            ("▤", "Entwicklungsaufträge"),
+            ("≡", "Bestehende Aufträge"),
+            ("▣", "Codeprojekte"),
+            ("⌘", "Prompt Studio"),
+        ]
+        for index, (symbol, label) in enumerate(navigation):
+            button = QPushButton(symbol + "  " + label)
+            button.setToolTip(label)
+            button.setCheckable(True)
+            button.setProperty("navSymbol", symbol)
+            button.setProperty("navLabel", label)
+            button.clicked.connect(lambda checked=False, page=index: self.tabs.setCurrentIndex(page))
+            self.nav_layout.addWidget(button)
+            self.nav_buttons.append(button)
+        self.nav_layout.addStretch()
+        tabs.tabBar().hide()
+        tabs.currentChanged.connect(self.update_navigation_selection)
+        workspace = QHBoxLayout()
+        workspace.setSpacing(10)
+        workspace.addWidget(self.nav_panel)
+        workspace.addWidget(tabs, 1)
+        layout.addLayout(workspace, 1)
         self.setCentralWidget(root)
+        self.update_navigation_selection(tabs.currentIndex())
         self.refresh_imports()
         self.refresh_prompt_projects()
         self.refresh()
         self.refresh_prompt_jobs()
         self.refresh_existing_jobs()
+
+    def toggle_navigation(self):
+        self.nav_expanded = not self.nav_expanded
+        self.nav_panel.setFixedWidth(215 if self.nav_expanded else 54)
+        self.nav_toggle.setText("☰  Menü einklappen" if self.nav_expanded else "☰")
+        for button in self.nav_buttons:
+            symbol = button.property("navSymbol")
+            label = button.property("navLabel")
+            button.setText(symbol + "  " + label if self.nav_expanded else symbol)
+
+    def update_navigation_selection(self, index):
+        for page, button in enumerate(self.nav_buttons):
+            button.setChecked(page == index)
+            button.setStyleSheet(
+                "QPushButton { text-align: left; background-color: #164e63; border-color: #0891b2; }"
+                if page == index else "QPushButton { text-align: left; }"
+            )
 
     @staticmethod
     def scroll_tab(widget):
