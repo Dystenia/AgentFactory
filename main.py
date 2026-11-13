@@ -490,6 +490,7 @@ class MainWindow(QMainWindow):
             job_id, source = self.active_workflow()
             job_workflow.ensure(self.db, job_id, source)
             self.prompt_mode.setCurrentText("Anforderungen klären")
+            self.workflow_request = ("questions", job_id, source)
             self.prepare_prompt()
             if not self.send_button.isEnabled():
                 return
@@ -514,6 +515,7 @@ class MainWindow(QMainWindow):
             if state["status"] not in ("ANSWERED", "FINAL_REVIEW", "READY"):
                 raise ValueError("Bitte zuerst die Rückfragen prüfen und beantworten.")
             self.prompt_mode.setCurrentText("Prompt optimieren")
+            self.workflow_request = ("final", job_id, source)
             self.prepare_prompt()
             if not self.send_button.isEnabled():
                 return
@@ -559,8 +561,8 @@ class MainWindow(QMainWindow):
             if self.prompt_mode.currentText() == "Prompt optimieren" and self.workflow_request and self.workflow_request[0] == "final":
                 state = job_workflow.get(self.db, self.workflow_request[1])
                 if state and state["status"] in ("ANSWERED", "FINAL_REVIEW", "READY"):
-                    task += "\\n\\nBESTÄTIGTE ANTWORTEN DES BENUTZERS:\\n" + state["answers"]
-                    task += "\\n\\nBISHERIGE RÜCKFRAGEN:\\n" + state["questions"]
+                    task += "\n\nBESTÄTIGTE ANTWORTEN DES BENUTZERS:\n" + state["answers"]
+                    task += "\n\nBISHERIGE RÜCKFRAGEN:\n" + state["questions"]
             self.prepared_payload = build_request(task, context)
             self.prepared_identity = (self.prompt_task.toPlainText(), root, self.prompt_provider.currentText(), self.prompt_model.currentText(), self.prompt_mode.currentText(), self.output_budget.currentText())
             self.context_preview.setPlainText(self.prepared_payload)
@@ -572,6 +574,7 @@ class MainWindow(QMainWindow):
     def send_prompt(self):
         identity = (self.prompt_task.toPlainText(), self.prompt_project.currentData(), self.prompt_provider.currentText(), self.prompt_model.currentText(), self.prompt_mode.currentText(), self.output_budget.currentText())
         if identity != getattr(self, "prepared_identity", None):
+            self.workflow_request = None
             self.send_button.setEnabled(False)
             QMessageBox.warning(self, "Vorschau veraltet", "Eingaben wurden geändert. Bitte Kontext erneut vorbereiten.")
             return
