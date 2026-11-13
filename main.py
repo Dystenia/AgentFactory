@@ -15,6 +15,7 @@ from git_preflight import git_preflight, format_preflight
 from controlled_edit import preview as preview_edit, apply as apply_edit, EditRejected
 import hashlib
 import difflib
+from ai_proposal import parse_proposal, ProposalError
 from PySide6.QtCore import QThread, Signal
 
 from PySide6.QtCore import Qt
@@ -125,6 +126,29 @@ class PromptWorker(QThread):
             self.succeeded.emit(generate(self.provider, self.model, system_prompt_for(self.mode), self.payload, api_key=self.api_key, max_output_tokens=self.max_output_tokens))
         except Exception as exc:
             self.failed.emit(str(exc) if isinstance(exc, ModelError) else "Unerwarteter Anbieterfehler.")
+
+
+class ProposalWorker(QThread):
+    succeeded = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, provider, model, payload, api_key, budget):
+        super().__init__()
+        self.provider, self.model, self.payload = provider, model, payload
+        self.api_key, self.budget = api_key, budget
+
+    def run(self):
+        try:
+            result = generate(self.provider, self.model,
+                "Du bist ein Python-Entwickler. Antworte ausschließlich mit einem JSON-Objekt "
+                "mit exakt den Feldern path, content und summary. content ist der vollständige "
+                "neue Dateiinhalt, keine Diffs oder Markdown. Bearbeite nur die angegebene Datei. "
+                "Wenn du die Änderung nicht sicher vornehmen kannst, melde den Grund in summary "
+                "und lasse content unverändert.",
+                self.payload, api_key=self.api_key, max_output_tokens=self.budget)
+            self.succeeded.emit(result)
+        except Exception as exc:
+            self.failed.emit(str(exc) if isinstance(exc, ModelError) else "KI-Anfrage fehlgeschlagen.")
 
 
 class ModelListWorker(QThread):
@@ -411,6 +435,10 @@ class MainWindow(QMainWindow):
         self.edit_diff.setMinimumHeight(180)
         prompt_layout.addWidget(self.edit_diff)
         self.edit_approval_snapshot = None
+        self.proposal_context = None
+        self.proposal_button = QPushButton("KI-Änderung für diese Datei vorschlagen")
+        self.proposal_button.clicked.connect(self.request_ai_edit)
+        prompt_layout.addWidget(self.proposal_button)
         self.prompt_tab_index = tabs.addTab(self.scroll_tab(prompt_tab), "Prompt Studio")
         # Navigation uses the existing tab pages, preserving their widgets and signals.
         self.nav_expanded = True
@@ -685,6 +713,76 @@ class MainWindow(QMainWindow):
             self.git_preflight_result.setPlainText("")
             QMessageBox.warning(self, "Git-Projektprüfung", str(exc))
 
+    def request_ai_edit(self):
+        try:
+            job_id, root = self._approved_edit_context()
+            relative = self.edit_relative_path.text().strip()
+            info = git_preflight(root)
+            if not info["clean"]:
+                raise ValueError("Git-Arbeitsverzeichnis muss sauber sein.")
+            # The existing controlled_edit.preview validates Git tracking and path safety.
+            target = Path(root) / relative
+            original = target.read_bytes()
+            if len(original) > 120_000:
+                raise ValueError("Datei ist für einen Einzeldatei-KI-Vorschlag zu groß.")
+            source = original.decode("utf-8")
+            sha = hashlib.sha256(original).hexdigest()
+            preview_edit(root, relative, sha, source)
+            state = job_workflow.get(self.db, job_id)
+            payload = ("FREIGEGEBENER ENTWICKLUNGSAUFTRAG:\\n" + state["final_prompt"]
+                + "\\n\\nBEARBEITE AUSSCHLIESSLICH DIE DATEI: " + relative
+                + "\\n\\nAKTUELLER DATEIINHALT:\\n" + source
+                + "\\n\\nGib exakt ein JSON-Objekt mit path, content, summary zurück.")
+            provider = self.prompt_provider.currentText()
+            answer = QMessageBox.question(self, "KI-Codevorschlag",
+                "Der vollständige Inhalt von " + relative
+                + " und der freigegebene Auftrag werden an " + provider
+                + " übertragen. Fortfahren?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
+            self.proposal_context = (job_id, root, relative, sha, info["commit"])
+            self.proposal_button.setEnabled(False)
+            self.proposal_worker = ProposalWorker(provider, self.prompt_model.currentText(),
+                payload, self.api_key.text().strip() if provider == "OpenAI" else None,
+                int(self.output_budget.currentText()))
+            self.proposal_worker.succeeded.connect(self.receive_ai_edit)
+            self.proposal_worker.failed.connect(self.fail_ai_edit)
+            self.proposal_worker.finished.connect(self.proposal_worker.deleteLater)
+            self.proposal_worker.start()
+        except (ValueError, OSError, UnicodeError, EditRejected, sqlite3.Error) as exc:
+            QMessageBox.warning(self, "KI-Codevorschlag", str(exc))
+
+    def fail_ai_edit(self, message):
+        self.proposal_button.setEnabled(True)
+        self.proposal_context = None
+        QMessageBox.warning(self, "KI-Codevorschlag", message)
+
+    def receive_ai_edit(self, raw):
+        self.proposal_button.setEnabled(True)
+        context = self.proposal_context
+        self.proposal_context = None
+        try:
+            if not context:
+                raise ValueError("KI-Vorschlag ist nicht mehr zugeordnet.")
+            job_id, root, relative, sha, commit = context
+            current_job, current_root = self._approved_edit_context()
+            if (current_job, current_root) != (job_id, root):
+                raise ValueError("Auftrag oder Projekt wurde während der KI-Anfrage gewechselt.")
+            info = git_preflight(root)
+            if not info["clean"] or info["commit"] != commit:
+                raise ValueError("Git-Zustand hat sich während der KI-Anfrage geändert.")
+            proposal = parse_proposal(raw, relative)
+            preview_edit(root, relative, sha, proposal["content"])
+            self.edit_relative_path.setText(relative)
+            self.edit_replacement.setPlainText(proposal["content"])
+            self.edit_approval_snapshot = None
+            self.edit_diff.clear()
+            self.preview_approved_edit()
+            QMessageBox.information(self, "KI-Vorschlag",
+                proposal["summary"] + "\\n\\nBitte den Diff prüfen. Schreiben erfordert eine weitere Freigabe.")
+        except (ValueError, OSError, UnicodeError, EditRejected, ProposalError, sqlite3.Error) as exc:
+            QMessageBox.warning(self, "KI-Vorschlag verworfen", str(exc))
+
     def _approved_edit_context(self):
         job_id, source = self.active_workflow()
         state = job_workflow.get(self.db, job_id)
@@ -736,7 +834,7 @@ class MainWindow(QMainWindow):
             if not diff:
                 raise ValueError("Keine Änderung vorhanden.")
             self.edit_diff.setPlainText(diff)
-            self.edit_approval_snapshot = (job_id, root, relative, sha, replacement, result["commit"])
+            self.edit_approval_snapshot = (job_id, root, relative, sha, replacement, info["commit"])
         except (ValueError, OSError, EditRejected, sqlite3.Error) as exc:
             self.edit_diff.clear()
             QMessageBox.warning(self, "Änderungsvorschau", str(exc))
