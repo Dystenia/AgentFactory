@@ -174,6 +174,7 @@ class MainWindow(QMainWindow):
         self.editing_job_id = None
         self.workflow_request = None
         self.emergency_stop = False
+        self.stop_generation = 0
         # Native decorated Windows window; keep it inside the usable desktop area.
         self.setWindowFlags(Qt.Window)
         self.setMinimumSize(560, 400)
@@ -557,6 +558,7 @@ class MainWindow(QMainWindow):
             if checked else "Status: bereit"
         )
         if checked:
+            self.stop_generation += 1
             self.workflow_request = None
             self.proposal_context = None
             self.edit_approval_snapshot = None
@@ -861,6 +863,7 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.Yes:
                 return
             self.proposal_context = (job_id, root, relative, sha, info["commit"])
+            self.proposal_request_generation = self.stop_generation
             self.proposal_button.setEnabled(False)
             self.proposal_worker = ProposalWorker(provider, self.prompt_model.currentText(),
                 payload, self.api_key.text().strip() if provider == "OpenAI" else None,
@@ -878,7 +881,7 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "KI-Codevorschlag", message)
 
     def receive_ai_edit(self, raw):
-        if self.emergency_stop:
+        if self.emergency_stop or self.proposal_request_generation != self.stop_generation:
             self.proposal_context = None
             return
         self.proposal_button.setEnabled(True)
@@ -994,6 +997,7 @@ class MainWindow(QMainWindow):
             )
             if answer != QMessageBox.Yes:
                 return
+            self.ensure_running()
             apply_edit(root, relative, sha, replacement, approved=True)
             self.edit_approval_snapshot = None
             self.git_preflight_result.setPlainText(format_preflight(git_preflight(root)))
@@ -1129,6 +1133,7 @@ class MainWindow(QMainWindow):
             return
         self.send_button.setEnabled(False)
         self.prompt_result.setPlainText("Anfrage läuft …")
+        self.prompt_request_generation = self.stop_generation
         self.worker = PromptWorker(identity[2], identity[3], self.prepared_payload, identity[4], self.api_key.text().strip() if identity[2] == "OpenAI" else None, int(identity[5]))
         self.worker.succeeded.connect(self.prompt_success)
         self.worker.failed.connect(self.prompt_failure)
@@ -1136,7 +1141,7 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def prompt_success(self, text):
-        if self.emergency_stop:
+        if self.emergency_stop or self.prompt_request_generation != self.stop_generation:
             self.workflow_request = None
             return
         self.prompt_result.setPlainText(text)
@@ -1164,7 +1169,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Workflow", str(exc))
 
     def prompt_failure(self, error):
-        if self.emergency_stop:
+        if self.emergency_stop or self.prompt_request_generation != self.stop_generation:
             return
         self.workflow_request = None
         self.prompt_result.setPlainText("Fehler: " + error)
