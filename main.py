@@ -112,6 +112,11 @@ def connect_db():
     if "project_root" not in columns:
         conn.execute("ALTER TABLE jobs ADD COLUMN project_root TEXT")
     job_workflow.migrate(conn)
+    conn.execute("""CREATE TABLE IF NOT EXISTS project_proposals (
+        job_id TEXT PRIMARY KEY, project_root TEXT NOT NULL,
+        commit_sha TEXT NOT NULL, proposal_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
     conn.commit()
     return conn
 
@@ -500,12 +505,12 @@ class MainWindow(QMainWindow):
         )
         phase_a_info.setWordWrap(True)
         prompt_layout.addWidget(phase_a_info)
-        self.project_generate_button = QPushButton("Phase A · Vollständigen Projektvorschlag generieren (nur Vorschau)")
+        self.project_generate_button = QPushButton("Projektdateien mit KI vorbereiten")
         self.project_generate_button.clicked.connect(self.request_project_generation)
         prompt_layout.addWidget(self.project_generate_button)
         self.project_generation_preview = QTextEdit()
         self.project_generation_preview.setReadOnly(True)
-        self.project_generation_preview.setPlaceholderText("Hier erscheinen die vorgeschlagenen Projektdateien. Es wird nichts geschrieben.")
+        self.project_generation_preview.setPlaceholderText("Der geprüfte Projektvorschlag wird gespeichert. Hier siehst du eine kurze Übersicht.")
         self.project_generation_preview.setMinimumHeight(200)
         prompt_layout.addWidget(self.project_generation_preview)
         self.project_apply_button = QPushButton("Geprüften Projektvorschlag in Git-Arbeitsordner schreiben")
@@ -605,11 +610,11 @@ class MainWindow(QMainWindow):
         self.nav_layout.addWidget(self.nav_toggle)
         self.nav_buttons = []
         navigation = [
-            ("▤", "Entwicklungsaufträge"),
-            ("≡", "Bestehende Aufträge"),
-            ("▣", "Codeprojekte"),
-            ("⌘", "Entwicklungsassistent"),
-            ("⚙", "System"),
+            ("▤", "1 · Auftrag erstellen"),
+            ("≡", "2 · Auftrag auswählen"),
+            ("▣", "3 · Projekt zuordnen"),
+            ("⌘", "4 · KI-Entwicklung"),
+            ("⚙", "Einstellungen"),
         ]
         for index, (symbol, label) in enumerate(navigation):
             button = QPushButton(symbol + "  " + label)
@@ -879,6 +884,30 @@ class MainWindow(QMainWindow):
         self.clarification_answers.setPlainText(state["answers"] if state else "")
         self.final_prompt.setPlainText(state["final_prompt"] if state else "")
         self.workflow_status.setText("Workflow: " + (state["status"] if state else "DRAFT / kein Auftrag"))
+        self.restore_project_proposal()
+
+    def restore_project_proposal(self):
+        self.validated_project_proposal = None
+        self.project_apply_button.setEnabled(False)
+        job_id = self.prompt_job.currentData()
+        if not job_id:
+            return
+        row = self.db.execute("SELECT project_root, commit_sha, proposal_json FROM project_proposals WHERE job_id=?",
+                              (job_id,)).fetchone()
+        if not row:
+            return
+        try:
+            root, commit, raw = row
+            proposal = parse_project_proposal(raw)
+            self.project_generation_preview.setPlainText(
+                proposal["summary"] + "\n\nGespeicherter Projektvorschlag:\n" +
+                "\n".join("• " + item["path"] for item in proposal["files"]) +
+                "\n\nVor der Übernahme wird der aktuelle Git-Stand erneut geprüft.")
+            if self.prompt_project.currentData() == root:
+                self.validated_project_proposal = (job_id, root, commit, self.stop_generation, proposal)
+                self.project_apply_button.setEnabled(True)
+        except (ValueError, ProjectProposalError):
+            self.project_generation_preview.setPlainText("Gespeicherter Vorschlag ist ungültig.")
 
     def bind_selected_project(self):
         try:
@@ -985,11 +1014,15 @@ class MainWindow(QMainWindow):
             if not info["clean"] or info["commit"] != commit:
                 raise ValueError("Git-Zustand hat sich während der Generierung verändert.")
             proposal = parse_project_proposal(raw)
+            self.db.execute("INSERT OR REPLACE INTO project_proposals (job_id, project_root, commit_sha, proposal_json) VALUES (?, ?, ?, ?)",
+                            (job_id, root, commit, json.dumps(proposal, ensure_ascii=False)))
+            self.db.commit()
             self.validated_project_proposal = (job_id, root, commit, generation, proposal)
             self.project_apply_button.setEnabled(True)
             lines = [proposal["summary"], "", "VORSCHAU – KEINE DATEIEN GESCHRIEBEN", ""]
             for item in proposal["files"]:
-                lines.extend(["=" * 55, item["path"], "=" * 55, item["content"], ""])
+                lines.append("• " + item["path"] + " (" + str(len(item["content"].encode("utf-8"))) + " Bytes)")
+            lines.append("\nVollständige Inhalte sind in SQLite gespeichert und bleiben nach Neustart verfügbar.")
             self.project_generation_preview.setPlainText("\n".join(lines))
         except (ValueError, OSError, ProjectProposalError, sqlite3.Error) as exc:
             self.validated_project_proposal = None
@@ -1018,6 +1051,8 @@ class MainWindow(QMainWindow):
                 return
             self.ensure_running()
             written = apply_project_proposal(root, proposal, commit, approved=True)
+            self.db.execute("DELETE FROM project_proposals WHERE job_id=?", (job_id,))
+            self.db.commit()
             self.validated_project_proposal = None
             self.project_apply_button.setEnabled(False)
             self.project_generation_preview.append("\nDATEIEN ERSTELLT (nicht committed):\n" + "\n".join(written))
