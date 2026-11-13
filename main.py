@@ -18,6 +18,7 @@ import hashlib
 import difflib
 from ai_proposal import parse_proposal, ProposalError
 from project_proposal import parse_project_proposal, ProjectProposalError
+from project_apply import apply_project_proposal
 from emergency_control import emergency
 from PySide6.QtCore import QThread, Signal
 
@@ -507,6 +508,11 @@ class MainWindow(QMainWindow):
         self.project_generation_preview.setPlaceholderText("Hier erscheinen die vorgeschlagenen Projektdateien. Es wird nichts geschrieben.")
         self.project_generation_preview.setMinimumHeight(200)
         prompt_layout.addWidget(self.project_generation_preview)
+        self.project_apply_button = QPushButton("Geprüften Projektvorschlag in Git-Arbeitsordner schreiben")
+        self.project_apply_button.setEnabled(False)
+        self.project_apply_button.clicked.connect(self.apply_generated_project)
+        prompt_layout.addWidget(self.project_apply_button)
+        self.validated_project_proposal = None
         self.single_file_section = QWidget()
         single_file_layout = QVBoxLayout(self.single_file_section)
         single_file_layout.setContentsMargins(0, 8, 0, 0)
@@ -918,6 +924,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Git-Projektprüfung", str(exc))
 
     def request_project_generation(self):
+        self.validated_project_proposal = None
+        self.project_apply_button.setEnabled(False)
         try:
             self.ensure_running()
             job_id, root = self._approved_edit_context()
@@ -977,12 +985,46 @@ class MainWindow(QMainWindow):
             if not info["clean"] or info["commit"] != commit:
                 raise ValueError("Git-Zustand hat sich während der Generierung verändert.")
             proposal = parse_project_proposal(raw)
+            self.validated_project_proposal = (job_id, root, commit, generation, proposal)
+            self.project_apply_button.setEnabled(True)
             lines = [proposal["summary"], "", "VORSCHAU – KEINE DATEIEN GESCHRIEBEN", ""]
             for item in proposal["files"]:
                 lines.extend(["=" * 55, item["path"], "=" * 55, item["content"], ""])
             self.project_generation_preview.setPlainText("\n".join(lines))
         except (ValueError, OSError, ProjectProposalError, sqlite3.Error) as exc:
+            self.validated_project_proposal = None
+            self.project_apply_button.setEnabled(False)
             self.project_generation_preview.setPlainText("Projektvorschlag verworfen: " + str(exc))
+
+    def apply_generated_project(self):
+        try:
+            self.ensure_running()
+            snapshot = self.validated_project_proposal
+            if snapshot is None:
+                raise ValueError("Kein gültiger Projektvorschlag zur Übernahme vorhanden.")
+            job_id, root, commit, generation, proposal = snapshot
+            if generation != self.stop_generation or self._approved_edit_context() != (job_id, root):
+                raise ValueError("Auftrag oder Freigabe hat sich geändert.")
+            info = git_preflight(root)
+            if not info["clean"] or info["commit"] != commit:
+                raise ValueError("Git-Zustand hat sich geändert.")
+            paths = [entry["path"] for entry in proposal["files"]]
+            question = ("Folgende NEUE Dateien werden im ausgewählten Git-Arbeitsordner erstellt:\\n\\n"
+                        + "\\n".join(paths) + "\\n\\n"
+                        "Vorhandene Dateien werden nicht überschrieben. Kein Test, Commit oder Push. "
+                        "Dateien jetzt ausdrücklich freigeben?")
+            if QMessageBox.question(self, "Projektdateien schreiben", question,
+                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                return
+            self.ensure_running()
+            written = apply_project_proposal(root, proposal, commit, approved=True)
+            self.validated_project_proposal = None
+            self.project_apply_button.setEnabled(False)
+            self.project_generation_preview.append("\\nDATEIEN ERSTELLT (nicht committed):\\n" + "\\n".join(written))
+            QMessageBox.information(self, "Projektdateien erstellt",
+                                    "Erstellt: " + str(len(written)) + " Dateien. Bitte Git-Diff und Tests prüfen.")
+        except (ValueError, OSError, sqlite3.Error, ProjectProposalError) as exc:
+            QMessageBox.warning(self, "Projektübernahme", str(exc))
 
     def request_ai_edit(self):
         try:
