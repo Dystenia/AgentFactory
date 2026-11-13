@@ -661,6 +661,23 @@ class MainWindow(QMainWindow):
         self.nav_layout.addStretch()
         tabs.tabBar().hide()
         tabs.currentChanged.connect(self.update_navigation_selection)
+        # Persistent, read-only context: no duplicate editor state.
+        self.context_strip = QLabel()
+        self.context_strip.setObjectName("contextStrip")
+        self.context_strip.setWordWrap(True)
+        self.context_strip.setStyleSheet(
+            "QLabel#contextStrip { background-color: #1d2430; border: 1px solid #344154; "
+            "border-radius: 6px; padding: 9px; color: #e6edf3; }"
+        )
+        layout.addWidget(self.context_strip)
+        self.prompt_job.currentIndexChanged.connect(self.update_context_strip)
+        self.prompt_project.currentIndexChanged.connect(self.update_context_strip)
+        self.prompt_provider.currentTextChanged.connect(self.update_context_strip)
+        self.prompt_model.currentTextChanged.connect(self.update_context_strip)
+        self.usd_limit.textChanged.connect(self.update_context_strip)
+        self.usd_input_price.textChanged.connect(self.update_context_strip)
+        self.usd_output_price.textChanged.connect(self.update_context_strip)
+        self.usd_price_date.textChanged.connect(self.update_context_strip)
         workspace = QHBoxLayout()
         workspace.setSpacing(10)
         workspace.addWidget(self.nav_panel)
@@ -673,6 +690,22 @@ class MainWindow(QMainWindow):
         self.refresh()
         self.refresh_prompt_jobs()
         self.refresh_existing_jobs()
+        self.update_context_strip()
+
+    def update_context_strip(self, *_):
+        """Show selected context without changing any workflow or budget state."""
+        job = self.prompt_job.currentText() if self.prompt_job.currentData() else "Kein Auftrag"
+        project = self.prompt_project.currentText() if self.prompt_project.currentData() else "Kein Projekt"
+        provider = self.prompt_provider.currentText()
+        model = self.prompt_model.currentText()
+        budget = self.usd_limit.text().strip() or "nicht gesetzt"
+        prices = ("eingetragen" if all(field.text().strip() for field in (
+            self.usd_input_price, self.usd_output_price, self.usd_price_date
+        )) else "unvollständig")
+        self.context_strip.setText(
+            f"AUFTRAG: {job}    |    PROJEKT: {project}\\n"
+            f"KI: {provider} / {model}    |    USD-Limit: {budget}    |    Preisangaben: {prices}"
+        )
 
     def hard_emergency_stop(self):
         """Latch all local actions, terminate registered child trees, then exit."""
