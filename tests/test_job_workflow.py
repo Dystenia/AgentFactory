@@ -41,6 +41,24 @@ class WorkflowTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             job_workflow.approve(self.db, "job-1", "Final")
 
+    def test_binding_project_revokes_ready_without_losing_final(self):
+        self.db.execute("ALTER TABLE jobs ADD COLUMN project_root TEXT")
+        self.db.execute("CREATE TABLE imported_projects (root TEXT PRIMARY KEY)")
+        self.db.execute("INSERT INTO imported_projects VALUES ('project-A')")
+        job_workflow.ensure(self.db, "job-1", "original")
+        job_workflow.save_questions(self.db, "job-1", "original", "Keine Rückfragen")
+        job_workflow.save_answers(self.db, "job-1", "Keine Rückfragen")
+        job_workflow.save_final(self.db, "job-1", "Final")
+        job_workflow.approve(self.db, "job-1", "Final")
+        self.assertTrue(job_workflow.bind_project(self.db, "job-1", "project-A"))
+        state = job_workflow.get(self.db, "job-1")
+        self.assertEqual(state["status"], "FINAL_REVIEW")
+        self.assertEqual(state["final_prompt"], "Final")
+        self.assertIsNone(state["approved_at"])
+        self.assertFalse(job_workflow.bind_project(self.db, "job-1", "project-A"))
+        with self.assertRaises(ValueError):
+            job_workflow.bind_project(self.db, "job-1", "missing")
+
     def test_missing_job_rejected(self):
         with self.assertRaises(ValueError):
             job_workflow.ensure(self.db, "unknown", "original")
