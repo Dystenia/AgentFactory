@@ -478,30 +478,44 @@ class MainWindow(QMainWindow):
         self.prompt_tab_index = tabs.addTab(prompt_tab, "Entwicklungsassistent")
         system_page = QWidget()
         system_layout = QVBoxLayout(system_page)
-        system_layout.addWidget(QLabel("System · KI-Konfiguration (nur während dieser Sitzung)"))
-        system_layout.addWidget(QLabel("API-Schlüssel bleibt ausschließlich im Arbeitsspeicher; kein Speichern in SQLite."))
-        system_layout.addWidget(QLabel("KI-Anbieter"))
+        system_layout.setContentsMargins(12, 12, 12, 12)
+        system_layout.setSpacing(8)
+
+        def system_label(text):
+            label = QLabel(text)
+            label.setWordWrap(True)
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            system_layout.addWidget(label)
+            return label
+
+        system_label("System · KI-Konfiguration (nur während dieser Sitzung)")
+        system_label("API-Schlüssel bleibt ausschließlich im Arbeitsspeicher; kein Speichern in SQLite.")
+        system_label("KI-Anbieter")
         system_layout.addWidget(self.prompt_provider)
-        system_layout.addWidget(QLabel("Modell"))
+        system_label("Modell")
         system_layout.addWidget(self.prompt_model)
         system_layout.addWidget(refresh_models)
-        system_layout.addWidget(QLabel("Maximale Ausgabe-Tokens"))
+        system_label("Maximale Ausgabe-Tokens")
         system_layout.addWidget(self.output_budget)
-        system_layout.addWidget(QLabel("OpenAI API-Schlüssel"))
+        system_label("OpenAI API-Schlüssel")
         system_layout.addWidget(self.api_key)
-        system_layout.addWidget(QLabel("Not-Aus · sperrt neue KI-Anfragen und Dateischreibvorgänge"))
+        system_label("Not-Aus · sperrt neue KI-Anfragen und Dateischreibvorgänge")
         self.kill_switch = QPushButton("NOT-AUS AKTIVIEREN")
         self.kill_switch.setCheckable(True)
         self.kill_switch.clicked.connect(self.toggle_emergency_stop)
         system_layout.addWidget(self.kill_switch)
         self.kill_status = QLabel("Status: bereit")
         system_layout.addWidget(self.kill_status)
-        system_layout.addWidget(QLabel(
+        system_label(
             "Laufende Netzwerkaufrufe können nicht garantiert abgebrochen werden; "
             "deren Ergebnisse werden nach Not-Aus verworfen. Keine automatische Dateiausführung."
-        ))
+        )
         system_layout.addStretch()
-        tabs.addTab(self.scroll_tab(system_page), "System")
+        for control in (self.prompt_provider, self.prompt_model, self.output_budget,
+                        self.api_key, refresh_models, self.kill_switch):
+            control.setMinimumWidth(0)
+            control.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        tabs.addTab(self.scroll_tab(system_page, horizontal=False), "System")
         # Navigation uses the existing tab pages, preserving their widgets and signals.
         self.nav_expanded = True
         self.nav_panel = QWidget()
@@ -600,9 +614,13 @@ class MainWindow(QMainWindow):
             )
 
     @staticmethod
-    def scroll_tab(widget):
-        """Scroll contents instead of forcing the top-level window beyond taskbar."""
+    def scroll_tab(widget, horizontal=True):
+        """Scroll vertically; responsive pages never scroll horizontally."""
         scroll = QScrollArea()
+        if not horizontal:
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            widget.setMinimumWidth(0)
+            widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
         scroll.setWidget(widget)
