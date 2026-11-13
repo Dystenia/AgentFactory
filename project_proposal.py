@@ -41,8 +41,8 @@ def parse_project_proposal(raw):
                {"con", "prn", "aux", "nul", "com1", "com2", "lpt1", "lpt2"}
                for part in parts):
             raise ProjectProposalError("Reservierter Windows-Dateiname.")
-        if not path.endswith((".py", ".md", ".txt", ".toml", ".json", ".yaml", ".yml")):
-            raise ProjectProposalError("Dateityp nicht freigegeben.")
+        if not path.lower().endswith((".py", ".md", ".txt", ".toml", ".json", ".yaml", ".yml", ".html", ".css", ".js", ".svg")):
+            raise ProjectProposalError("Dateityp nicht freigegeben: " + path)
         size = len(body.encode("utf-8"))
         if size > 120_000:
             raise ProjectProposalError("Einzeldatei zu groß.")
