@@ -703,7 +703,7 @@ class MainWindow(QMainWindow):
             self.usd_input_price, self.usd_output_price, self.usd_price_date
         )) else "unvollständig")
         self.context_strip.setText(
-            f"AUFTRAG: {job}    |    PROJEKT: {project}\\n"
+            f"AUFTRAG: {job}    |    PROJEKT: {project}\n"
             f"KI: {provider} / {model}    |    USD-Limit: {budget}    |    Preisangaben: {prices}"
         )
 
