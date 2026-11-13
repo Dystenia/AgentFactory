@@ -955,6 +955,7 @@ class MainWindow(QMainWindow):
             job_workflow.ensure(self.db, job_id, source)
             job_workflow.save_answers(self.db, job_id, self.clarification_answers.toPlainText())
             self.load_workflow()
+            self.show_workflow_step(3)
         except (ValueError, sqlite3.Error) as exc:
             QMessageBox.warning(self, "Antworten", str(exc))
 
@@ -994,6 +995,7 @@ class MainWindow(QMainWindow):
                 return
             job_workflow.approve(self.db, job_id, self.final_prompt.toPlainText())
             self.load_workflow()
+            self.show_workflow_step(4)
         except (ValueError, sqlite3.Error) as exc:
             QMessageBox.warning(self, "Freigabe", str(exc))
 
@@ -1078,8 +1080,11 @@ class MainWindow(QMainWindow):
                     # Reloading from SQLite here would erase the unsaved draft.
                     self.final_prompt.setPlainText(text)
                     self.workflow_status.setText("Workflow: Finalen Entwurf prüfen und speichern")
+                    self.show_workflow_step(3)
                     return
             self.load_workflow()
+            if action == "questions":
+                self.show_workflow_step(2)
         except (ValueError, sqlite3.Error) as exc:
             QMessageBox.warning(self, "Workflow", str(exc))
 
