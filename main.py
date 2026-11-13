@@ -12,6 +12,9 @@ from project_analysis import MODES, system_prompt_for
 from project_access import validate_project_root
 import job_workflow
 from git_preflight import git_preflight, format_preflight
+from controlled_edit import preview as preview_edit, apply as apply_edit, EditRejected
+import hashlib
+import difflib
 from PySide6.QtCore import QThread, Signal
 
 from PySide6.QtCore import Qt
@@ -388,6 +391,26 @@ class MainWindow(QMainWindow):
         self.git_preflight_result.setMinimumHeight(160)
         self.git_preflight_result.setPlaceholderText("Ein READY-Auftrag mit gespeichertem Git-Projekt ist erforderlich.")
         prompt_layout.addWidget(self.git_preflight_result)
+        prompt_layout.addWidget(QLabel("Phase 3 · Kontrollierte Einzeldatei-Änderung (manuell, kein KI-Executor)"))
+        self.edit_relative_path = QLineEdit()
+        self.edit_relative_path.setPlaceholderText("Relativer Pfad einer vorhandenen Textdatei, z. B. README.md")
+        prompt_layout.addWidget(self.edit_relative_path)
+        self.edit_replacement = QTextEdit()
+        self.edit_replacement.setPlaceholderText("Vollständiger neuer UTF-8-Dateiinhalt")
+        prompt_layout.addWidget(self.edit_replacement)
+        edit_buttons = QHBoxLayout()
+        preview_button = QPushButton("7 · Änderung als Diff prüfen")
+        preview_button.clicked.connect(self.preview_approved_edit)
+        edit_buttons.addWidget(preview_button)
+        apply_button = QPushButton("8 · Geprüfte Änderung ausführen")
+        apply_button.clicked.connect(self.apply_approved_edit)
+        edit_buttons.addWidget(apply_button)
+        prompt_layout.addLayout(edit_buttons)
+        self.edit_diff = QTextEdit()
+        self.edit_diff.setReadOnly(True)
+        self.edit_diff.setMinimumHeight(180)
+        prompt_layout.addWidget(self.edit_diff)
+        self.edit_approval_snapshot = None
         self.prompt_tab_index = tabs.addTab(self.scroll_tab(prompt_tab), "Prompt Studio")
         layout.addWidget(tabs)
         self.setCentralWidget(root)
@@ -608,6 +631,84 @@ class MainWindow(QMainWindow):
         except (ValueError, OSError, sqlite3.Error) as exc:
             self.git_preflight_result.setPlainText("")
             QMessageBox.warning(self, "Git-Projektprüfung", str(exc))
+
+    def _approved_edit_context(self):
+        job_id, source = self.active_workflow()
+        state = job_workflow.get(self.db, job_id)
+        if not state or state["status"] != "READY" or state["source_description"] != source:
+            raise ValueError("Der gespeicherte Entwicklungsauftrag muss READY sein.")
+        if self.final_prompt.toPlainText() != state["final_prompt"]:
+            raise ValueError("Der finale Auftrag wurde verändert; bitte erneut speichern und freigeben.")
+        row = self.db.execute("SELECT project_root FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not row or not row[0]:
+            raise ValueError("Dem Auftrag ist kein Git-Projekt zugeordnet.")
+        return job_id, row[0]
+
+    def preview_approved_edit(self):
+        self.edit_approval_snapshot = None
+        self.edit_diff.clear()
+        try:
+            job_id, root = self._approved_edit_context()
+            relative = self.edit_relative_path.text().strip()
+            # First validate the path and Git state before reading its bytes.
+            from pathlib import Path
+            info = git_preflight(root)
+            if not info["clean"]:
+                raise ValueError("Git-Arbeitsverzeichnis ist nicht sauber.")
+            target = Path(info["root"]) / relative
+            # Use a preliminary hash only; preview_edit validates path and symlinks.
+            original = target.read_bytes()
+            sha = hashlib.sha256(original).hexdigest()
+            replacement = self.edit_replacement.toPlainText()
+            result = preview_edit(root, relative, sha, replacement)
+            try:
+                old_text = original.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError("Nur UTF-8-Textdateien werden unterstützt.") from exc
+            diff = "".join(difflib.unified_diff(
+                old_text.splitlines(keepends=True),
+                replacement.splitlines(keepends=True),
+                fromfile="a/" + relative, tofile="b/" + relative,
+            ))
+            if not diff:
+                raise ValueError("Keine Änderung vorhanden.")
+            self.edit_diff.setPlainText(diff)
+            self.edit_approval_snapshot = (job_id, root, relative, sha, replacement, result["commit"])
+        except (ValueError, OSError, EditRejected, sqlite3.Error) as exc:
+            self.edit_diff.clear()
+            QMessageBox.warning(self, "Änderungsvorschau", str(exc))
+
+    def apply_approved_edit(self):
+        try:
+            if self.edit_approval_snapshot is None:
+                raise ValueError("Zuerst die Änderungsvorschau erstellen.")
+            job_id, root, relative, sha, replacement, commit = self.edit_approval_snapshot
+            active_job, active_root = self._approved_edit_context()
+            if (active_job, active_root) != (job_id, root):
+                raise ValueError("Auftrag oder Projektzuordnung hat sich geändert.")
+            if self.edit_relative_path.text().strip() != relative or self.edit_replacement.toPlainText() != replacement:
+                raise ValueError("Dateipfad oder Inhalt wurde seit der Vorschau verändert.")
+            info = git_preflight(root)
+            if not info["clean"] or info["commit"] != commit:
+                raise ValueError("Git-Stand hat sich seit der Vorschau geändert.")
+            answer = QMessageBox.question(
+                self, "Dateiänderung ausdrücklich freigeben",
+                "Diese Aktion überschreibt genau eine vorhandene Datei:\n"
+                + str(Path(root) / relative)
+                + "\n\nDer Diff wurde angezeigt. Änderung jetzt schreiben?\n"
+                "Es erfolgt kein Commit und kein Push.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            apply_edit(root, relative, sha, replacement, approved=True)
+            self.edit_approval_snapshot = None
+            self.git_preflight_result.setPlainText(format_preflight(git_preflight(root)))
+            QMessageBox.information(self, "Datei geändert",
+                "Änderung geschrieben. Bitte Git-Diff prüfen und Tests ausführen; kein Commit erstellt.")
+        except (ValueError, OSError, EditRejected, sqlite3.Error) as exc:
+            self.edit_approval_snapshot = None
+            QMessageBox.warning(self, "Dateiänderung", str(exc))
 
     def request_clarification(self):
         try:
