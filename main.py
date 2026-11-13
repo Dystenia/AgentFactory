@@ -173,6 +173,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Dystenia Agent Factory · MVP 0.4.0-dev")
         self.editing_job_id = None
         self.workflow_request = None
+        self.emergency_stop = False
         # Native decorated Windows window; keep it inside the usable desktop area.
         self.setWindowFlags(Qt.Window)
         self.setMinimumSize(560, 400)
@@ -474,6 +475,32 @@ class MainWindow(QMainWindow):
         prompt_layout.addStretch()
         self.show_workflow_step(0)
         self.prompt_tab_index = tabs.addTab(prompt_tab, "Entwicklungsassistent")
+        system_page = QWidget()
+        system_layout = QVBoxLayout(system_page)
+        system_layout.addWidget(QLabel("System · KI-Konfiguration (nur während dieser Sitzung)"))
+        system_layout.addWidget(QLabel("API-Schlüssel bleibt ausschließlich im Arbeitsspeicher; kein Speichern in SQLite."))
+        system_layout.addWidget(QLabel("KI-Anbieter"))
+        system_layout.addWidget(self.prompt_provider)
+        system_layout.addWidget(QLabel("Modell"))
+        system_layout.addWidget(self.prompt_model)
+        system_layout.addWidget(refresh_models)
+        system_layout.addWidget(QLabel("Maximale Ausgabe-Tokens"))
+        system_layout.addWidget(self.output_budget)
+        system_layout.addWidget(QLabel("OpenAI API-Schlüssel"))
+        system_layout.addWidget(self.api_key)
+        system_layout.addWidget(QLabel("Not-Aus · sperrt neue KI-Anfragen und Dateischreibvorgänge"))
+        self.kill_switch = QPushButton("NOT-AUS AKTIVIEREN")
+        self.kill_switch.setCheckable(True)
+        self.kill_switch.clicked.connect(self.toggle_emergency_stop)
+        system_layout.addWidget(self.kill_switch)
+        self.kill_status = QLabel("Status: bereit")
+        system_layout.addWidget(self.kill_status)
+        system_layout.addWidget(QLabel(
+            "Laufende Netzwerkaufrufe können nicht garantiert abgebrochen werden; "
+            "deren Ergebnisse werden nach Not-Aus verworfen. Keine automatische Dateiausführung."
+        ))
+        system_layout.addStretch()
+        tabs.addTab(self.scroll_tab(system_page), "System")
         # Navigation uses the existing tab pages, preserving their widgets and signals.
         self.nav_expanded = True
         self.nav_panel = QWidget()
@@ -492,6 +519,7 @@ class MainWindow(QMainWindow):
             ("≡", "Bestehende Aufträge"),
             ("▣", "Codeprojekte"),
             ("⌘", "Entwicklungsassistent"),
+            ("⚙", "System"),
         ]
         for index, (symbol, label) in enumerate(navigation):
             button = QPushButton(symbol + "  " + label)
@@ -517,6 +545,31 @@ class MainWindow(QMainWindow):
         self.refresh()
         self.refresh_prompt_jobs()
         self.refresh_existing_jobs()
+
+    def toggle_emergency_stop(self, checked):
+        self.emergency_stop = bool(checked)
+        self.kill_switch.setText("NOT-AUS AUFHEBEN" if checked else "NOT-AUS AKTIVIEREN")
+        self.kill_switch.setStyleSheet(
+            "background-color: #991b1b; color: white;" if checked else ""
+        )
+        self.kill_status.setText(
+            "Status: GESPERRT – keine KI-Anfragen oder Dateischreibvorgänge"
+            if checked else "Status: bereit"
+        )
+        if checked:
+            self.workflow_request = None
+            self.proposal_context = None
+            self.edit_approval_snapshot = None
+            self.edit_diff.clear()
+            self.send_button.setEnabled(False)
+            self.proposal_button.setEnabled(False)
+        else:
+            self.proposal_button.setEnabled(True)
+            self.invalidate_prompt_preview()
+
+    def ensure_running(self):
+        if self.emergency_stop:
+            raise ValueError("NOT-AUS ist aktiv. Aktion gesperrt; unter System aufheben.")
 
     def show_workflow_step(self, index):
         self.workflow_pages.setCurrentIndex(index)
@@ -665,6 +718,11 @@ class MainWindow(QMainWindow):
             self.job_project.blockSignals(False)
 
     def refresh_openai_models(self):
+        try:
+            self.ensure_running()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Not-Aus", str(exc))
+            return
         if self.prompt_provider.currentText() != "OpenAI":
             QMessageBox.information(self, "Modelle", "Bitte zuerst OpenAI als Anbieter auswählen.")
             return
@@ -675,6 +733,8 @@ class MainWindow(QMainWindow):
         self.model_worker.start()
 
     def models_received(self, models):
+        if self.emergency_stop:
+            return
         previous = self.prompt_model.currentText()
         self.prompt_model.blockSignals(True)
         self.prompt_model.clear()
@@ -764,6 +824,7 @@ class MainWindow(QMainWindow):
 
     def request_ai_edit(self):
         try:
+            self.ensure_running()
             job_id, root = self._approved_edit_context()
             relative = self.edit_relative_path.text().strip()
             info = git_preflight(root)
@@ -817,6 +878,9 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "KI-Codevorschlag", message)
 
     def receive_ai_edit(self, raw):
+        if self.emergency_stop:
+            self.proposal_context = None
+            return
         self.proposal_button.setEnabled(True)
         context = self.proposal_context
         self.proposal_context = None
@@ -860,6 +924,9 @@ class MainWindow(QMainWindow):
         return job_id, row[0]
 
     def preview_approved_edit(self):
+        if self.emergency_stop:
+            QMessageBox.warning(self, "Not-Aus", "Änderungsvorschau gesperrt.")
+            return
         self.edit_approval_snapshot = None
         self.edit_diff.clear()
         try:
@@ -905,6 +972,7 @@ class MainWindow(QMainWindow):
 
     def apply_approved_edit(self):
         try:
+            self.ensure_running()
             if self.edit_approval_snapshot is None:
                 raise ValueError("Zuerst die Änderungsvorschau erstellen.")
             job_id, root, relative, sha, replacement, commit = self.edit_approval_snapshot
@@ -1001,6 +1069,7 @@ class MainWindow(QMainWindow):
 
     def prepare_prompt(self):
         try:
+            self.ensure_running()
             root = self.prompt_project.currentData()
             context = "Kein Projektkontext ausgewählt."
             if root:
@@ -1024,6 +1093,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Kontextprüfung", str(exc))
 
     def send_prompt(self):
+        if self.emergency_stop:
+            QMessageBox.warning(self, "Not-Aus", "KI-Anfrage gesperrt.")
+            return
         identity = (self.prompt_task.toPlainText(), self.prompt_project.currentData(), self.prompt_provider.currentText(), self.prompt_model.currentText(), self.prompt_mode.currentText(), self.output_budget.currentText())
         if identity != getattr(self, "prepared_identity", None):
             self.workflow_request = None
@@ -1064,6 +1136,9 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def prompt_success(self, text):
+        if self.emergency_stop:
+            self.workflow_request = None
+            return
         self.prompt_result.setPlainText(text)
         request = self.workflow_request
         self.workflow_request = None
@@ -1089,6 +1164,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Workflow", str(exc))
 
     def prompt_failure(self, error):
+        if self.emergency_stop:
+            return
         self.workflow_request = None
         self.prompt_result.setPlainText("Fehler: " + error)
 
@@ -1367,6 +1444,7 @@ class MainWindow(QMainWindow):
         self.table.resizeColumnsToContents()
 
     def closeEvent(self, event):
+        self.api_key.clear()
         self.db.close()
         super().closeEvent(event)
 
