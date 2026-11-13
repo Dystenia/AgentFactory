@@ -25,7 +25,7 @@ def git_preflight(path, timeout=12):
     top = run("rev-parse", "--show-toplevel")
     if validate_project_root(top) != root:
         raise ValueError("Der gewählte Projektordner ist nicht die Wurzel des Git-Repositories.")
-    branch = run("symbolic-ref", "--quiet", "--short", "HEAD") if run("symbolic-ref", "--quiet", "HEAD") else ""
+    branch = run("rev-parse", "--abbrev-ref", "HEAD")
     commit = run("rev-parse", "HEAD")
     status = run("status", "--porcelain=v1", "--untracked-files=normal")
     return {
