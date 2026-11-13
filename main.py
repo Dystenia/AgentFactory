@@ -655,8 +655,18 @@ class MainWindow(QMainWindow):
             info = git_preflight(root)
             if not info["clean"]:
                 raise ValueError("Git-Arbeitsverzeichnis ist nicht sauber.")
-            target = Path(info["root"]) / relative
-            # Use a preliminary hash only; preview_edit validates path and symlinks.
+            rel = Path(relative)
+            if not relative or rel.is_absolute() or ".." in rel.parts or "." in rel.parts:
+                raise ValueError("Nur relative Dateipfade innerhalb des Projekts erlaubt.")
+            base = Path(info["root"])
+            target = base / rel
+            current = base
+            for component in rel.parts:
+                current = current / component
+                if current.is_symlink() or (hasattr(current, "is_junction") and current.is_junction()):
+                    raise ValueError("Symlink/Junction im Dateipfad ist nicht erlaubt.")
+            if not target.is_file() or not target.resolve().is_relative_to(base.resolve()):
+                raise ValueError("Die Datei muss innerhalb des Projektordners existieren.")
             original = target.read_bytes()
             sha = hashlib.sha256(original).hexdigest()
             replacement = self.edit_replacement.toPlainText()
