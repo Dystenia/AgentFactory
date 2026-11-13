@@ -649,6 +649,15 @@ class MainWindow(QMainWindow):
             button.clicked.connect(lambda checked=False, page=index: self.tabs.setCurrentIndex(page))
             self.nav_layout.addWidget(button)
             self.nav_buttons.append(button)
+        # Direct access to the five workflow phases without changing their state.
+        self.workflow_nav_buttons = []
+        for step, title in enumerate(("Idee", "Prüfung", "Rückfragen", "Antworten", "Arbeiten")):
+            button = QPushButton(f"    {step + 1} · {title}")
+            button.setToolTip(f"KI-Entwicklung: {title}")
+            button.setObjectName("workflowNavigation")
+            button.clicked.connect(lambda checked=False, phase=step: self.open_workflow_phase(phase))
+            self.nav_layout.addWidget(button)
+            self.workflow_nav_buttons.append(button)
         self.nav_layout.addStretch()
         tabs.tabBar().hide()
         tabs.currentChanged.connect(self.update_navigation_selection)
@@ -699,12 +708,22 @@ class MainWindow(QMainWindow):
 
     def show_workflow_step(self, index):
         self.workflow_pages.setCurrentIndex(index)
+        for step, button in enumerate(getattr(self, "workflow_nav_buttons", ())):
+            button.setStyleSheet(
+                "QPushButton { text-align: left; background-color: #164e63; border-color: #0891b2; }"
+                if step == index else "QPushButton { text-align: left; }"
+            )
         for step, button in enumerate(self.workflow_step_buttons):
             button.setChecked(step == index)
             button.setStyleSheet(
                 "QPushButton { background-color: #164e63; border-color: #0891b2; }"
                 if step == index else ""
             )
+
+    def open_workflow_phase(self, phase):
+        """Open a workflow phase while retaining the current job and project."""
+        self.tabs.setCurrentIndex(self.prompt_tab_index)
+        self.show_workflow_step(phase)
 
     def toggle_navigation(self):
         self.nav_expanded = not self.nav_expanded
@@ -714,6 +733,8 @@ class MainWindow(QMainWindow):
             symbol = button.property("navSymbol")
             label = button.property("navLabel")
             button.setText(symbol + "  " + label if self.nav_expanded else symbol)
+        for button in self.workflow_nav_buttons:
+            button.setVisible(self.nav_expanded)
 
     def update_navigation_selection(self, index):
         for page, button in enumerate(self.nav_buttons):
