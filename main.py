@@ -623,8 +623,12 @@ class MainWindow(QMainWindow):
                 job_workflow.save_questions(self.db, job_id, source, text)
             elif action == "final":
                 state = job_workflow.get(self.db, job_id)
-                if state and state["source_description"] == source:
+                if state and state["source_description"] == source and self.prompt_job.currentData() == job_id:
+                    # Keep the generated draft visible until the user reviews and saves it.
+                    # Reloading from SQLite here would erase the unsaved draft.
                     self.final_prompt.setPlainText(text)
+                    self.workflow_status.setText("Workflow: Finalen Entwurf prüfen und speichern")
+                    return
             self.load_workflow()
         except (ValueError, sqlite3.Error) as exc:
             QMessageBox.warning(self, "Workflow", str(exc))
