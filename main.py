@@ -11,6 +11,7 @@ from model_router import generate, list_openai_models, ModelError
 from project_analysis import MODES, system_prompt_for
 from project_access import validate_project_root
 import job_workflow
+from git_preflight import git_preflight, format_preflight
 from PySide6.QtCore import QThread, Signal
 
 from PySide6.QtCore import Qt
@@ -353,6 +354,15 @@ class MainWindow(QMainWindow):
         prompt_layout.addLayout(final_actions)
         self.workflow_status = QLabel("Workflow: Bitte gespeicherten Auftrag auswählen")
         prompt_layout.addWidget(self.workflow_status)
+        prompt_layout.addWidget(QLabel("Phase 2 · Git-Projektprüfung (nur lesend)"))
+        self.git_preflight_button = QPushButton("6 · Freigegebenes Projekt und Git-Status prüfen")
+        self.git_preflight_button.clicked.connect(self.check_approved_project)
+        prompt_layout.addWidget(self.git_preflight_button)
+        self.git_preflight_result = QTextEdit()
+        self.git_preflight_result.setReadOnly(True)
+        self.git_preflight_result.setMinimumHeight(160)
+        self.git_preflight_result.setPlaceholderText("Ein READY-Auftrag mit gespeichertem Git-Projekt ist erforderlich.")
+        prompt_layout.addWidget(self.git_preflight_result)
         tabs.addTab(self.scroll_tab(prompt_tab), "Prompt Studio")
         layout.addWidget(tabs)
         self.setCentralWidget(root)
@@ -484,6 +494,22 @@ class MainWindow(QMainWindow):
         self.clarification_answers.setPlainText(state["answers"] if state else "")
         self.final_prompt.setPlainText(state["final_prompt"] if state else "")
         self.workflow_status.setText("Workflow: " + (state["status"] if state else "DRAFT / kein Auftrag"))
+
+    def check_approved_project(self):
+        try:
+            job_id, source = self.active_workflow()
+            state = job_workflow.get(self.db, job_id)
+            if not state or state["status"] != "READY" or state["source_description"] != source:
+                raise ValueError("Zuerst den Entwicklungsauftrag freigeben (READY).")
+            row = self.db.execute("SELECT project_root FROM jobs WHERE id=?", (job_id,)).fetchone()
+            project_root = row[0] if row else None
+            if not project_root:
+                raise ValueError("Der Auftrag hat noch kein Codeprojekt. Bitte in der Auftragsverwaltung ein importiertes Git-Projekt zuordnen.")
+            info = git_preflight(project_root)
+            self.git_preflight_result.setPlainText(format_preflight(info))
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            self.git_preflight_result.setPlainText("")
+            QMessageBox.warning(self, "Git-Projektprüfung", str(exc))
 
     def request_clarification(self):
         try:
