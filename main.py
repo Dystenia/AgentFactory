@@ -388,7 +388,7 @@ class MainWindow(QMainWindow):
         self.git_preflight_result.setMinimumHeight(160)
         self.git_preflight_result.setPlaceholderText("Ein READY-Auftrag mit gespeichertem Git-Projekt ist erforderlich.")
         prompt_layout.addWidget(self.git_preflight_result)
-        tabs.addTab(self.scroll_tab(prompt_tab), "Prompt Studio")
+        self.prompt_tab_index = tabs.addTab(self.scroll_tab(prompt_tab), "Prompt Studio")
         layout.addWidget(tabs)
         self.setCentralWidget(root)
         self.refresh_imports()
@@ -452,7 +452,7 @@ class MainWindow(QMainWindow):
             return
         self.prompt_job.setCurrentIndex(index)
         self.select_prompt_job(index)
-        self.tabs.setCurrentIndex(self.tabs.indexOf(self.prompt_tab))
+        self.tabs.setCurrentIndex(self.prompt_tab_index)
 
     def refresh_prompt_jobs(self):
         previous = self.prompt_job.currentData()
