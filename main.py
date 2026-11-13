@@ -246,8 +246,26 @@ class MainWindow(QMainWindow):
         use_in_prompt = QPushButton("Ausgewähltes Projekt im Prompt Studio verwenden")
         use_in_prompt.clicked.connect(self.use_selected_project_in_prompt)
         import_layout.addWidget(use_in_prompt)
+        existing_tab = QWidget()
+        existing_layout = QVBoxLayout(existing_tab)
+        existing_layout.addWidget(QLabel("Gespeicherte Entwicklungsaufträge (aus der Auftragsdatenbank)"))
+        self.existing_job = QComboBox()
+        self.existing_job.currentIndexChanged.connect(self.show_existing_job)
+        existing_layout.addWidget(self.existing_job)
+        self.existing_job_details = QTextEdit()
+        self.existing_job_details.setReadOnly(True)
+        existing_layout.addWidget(self.existing_job_details)
+        open_existing = QPushButton("Ausgewählten Auftrag im Prompt Studio öffnen")
+        open_existing.setObjectName("primaryButton")
+        open_existing.clicked.connect(self.open_existing_job)
+        existing_layout.addWidget(open_existing)
+        reload_existing = QPushButton("Auftragsliste aktualisieren")
+        reload_existing.clicked.connect(self.refresh_existing_jobs)
+        existing_layout.addWidget(reload_existing)
+        tabs.addTab(self.scroll_tab(existing_tab), "Bestehende Aufträge")
         tabs.addTab(self.scroll_tab(self.import_tab), "Bestehende Projekte")
         prompt_tab = QWidget()
+        self.prompt_tab = prompt_tab
         prompt_layout = QVBoxLayout(prompt_tab)
         prompt_layout.addWidget(QLabel("Prompt Studio · KI-Aufrufe nur nach ausdrücklicher Freigabe"))
         self.prompt_project = QComboBox()
@@ -377,6 +395,7 @@ class MainWindow(QMainWindow):
         self.refresh_prompt_projects()
         self.refresh()
         self.refresh_prompt_jobs()
+        self.refresh_existing_jobs()
 
     @staticmethod
     def scroll_tab(widget):
@@ -389,6 +408,51 @@ class MainWindow(QMainWindow):
 
     def invalidate_prompt_preview(self, *_):
         self.send_button.setEnabled(False)
+
+    def refresh_existing_jobs(self):
+        previous = self.existing_job.currentData()
+        self.existing_job.blockSignals(True)
+        self.existing_job.clear()
+        self.existing_job.addItem("Auftrag auswählen", "")
+        for job_id, name, status in self.db.execute(
+            "SELECT id, name, status FROM jobs ORDER BY created_at DESC"
+        ):
+            self.existing_job.addItem(f"{name} · {status} · {job_id[:8]}", job_id)
+            self.existing_job.setItemData(self.existing_job.count() - 1, job_id, Qt.ToolTipRole)
+        index = self.existing_job.findData(previous) if previous else 0
+        self.existing_job.setCurrentIndex(max(0, index))
+        self.existing_job.blockSignals(False)
+        self.show_existing_job(self.existing_job.currentIndex())
+
+    def show_existing_job(self, index):
+        job_id = self.existing_job.itemData(index) if index >= 0 else None
+        if not job_id:
+            self.existing_job_details.clear()
+            return
+        record = self.db.execute(
+            "SELECT name, kind, status, description, project_root FROM jobs WHERE id=?",
+            (job_id,)
+        ).fetchone()
+        if record:
+            self.existing_job_details.setPlainText(
+                f"Auftrag: {record[0]}\\nUUID: {job_id}\\nTyp: {record[1]}\\n"
+                f"Status: {record[2]}\\nCodeprojekt: {record[4] or 'Noch nicht zugeordnet'}\\n\\n"
+                f"Anforderungen:\\n{record[3]}"
+            )
+
+    def open_existing_job(self):
+        job_id = self.existing_job.currentData()
+        if not job_id:
+            QMessageBox.information(self, "Auftrag", "Bitte einen gespeicherten Auftrag auswählen.")
+            return
+        self.refresh_prompt_jobs()
+        index = self.prompt_job.findData(job_id)
+        if index < 0:
+            QMessageBox.warning(self, "Auftrag", "Auftrag wurde nicht gefunden.")
+            return
+        self.prompt_job.setCurrentIndex(index)
+        self.select_prompt_job(index)
+        self.tabs.setCurrentIndex(self.tabs.indexOf(self.prompt_tab))
 
     def refresh_prompt_jobs(self):
         previous = self.prompt_job.currentData()
@@ -905,6 +969,7 @@ class MainWindow(QMainWindow):
         self.clear_editor()
         self.refresh()
         self.refresh_prompt_jobs()
+        self.refresh_existing_jobs()
         self.refresh_prompt_projects()
 
     def simulate_job(self):
