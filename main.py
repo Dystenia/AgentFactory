@@ -28,7 +28,7 @@ from PySide6.QtGui import QColor, QPalette, QIcon, QShortcut, QKeySequence
 from PySide6.QtWidgets import (QApplication, QComboBox, QFormLayout, QHBoxLayout,
                                QLabel, QLineEdit, QMainWindow, QMessageBox,
                                QPushButton, QTableWidget, QTableWidgetItem,
-                               QTextEdit, QVBoxLayout, QWidget, QFileDialog, QTabWidget, QScrollArea, QSizePolicy, QInputDialog, QStackedWidget, QHeaderView)
+                               QTextEdit, QVBoxLayout, QWidget, QFileDialog, QTabWidget, QScrollArea, QSizePolicy, QInputDialog, QStackedWidget, QHeaderView, QSplitter, QGroupBox)
 
 APP_DIR = Path(__file__).resolve().parent
 ICON_PATH = APP_DIR / "assets" / "dystenia_agent_factory.ico"
@@ -69,6 +69,9 @@ QScrollBar:vertical { background: #12151c; width: 12px; }
 QScrollBar::handle:vertical { background: #435269; border-radius: 5px; min-height: 25px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
 QMessageBox { background-color: #12151c; }
+QGroupBox { border: 1px solid #344154; border-radius: 8px; margin-top: 12px; padding: 12px 8px 8px 8px; font-weight: 600; }
+QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #67e8f9; }
+QSplitter::handle { background-color: #344154; height: 5px; }
 """
 
 
@@ -399,38 +402,46 @@ class MainWindow(QMainWindow):
             return page_layout
 
         prompt_layout = new_step()
-        prompt_layout.addWidget(QLabel("1 · Idee und Projekt auswählen"))
+        prompt_layout.addWidget(QLabel("1 · Entwicklungsauftrag und Projekt"))
+        selection_group = QGroupBox("01  Auftrag und Projektzuordnung")
+        selection_layout = QVBoxLayout(selection_group)
+        prompt_layout.addWidget(selection_group)
         self.prompt_project = QComboBox()
         self.prompt_project.setMinimumWidth(240)
         self.prompt_project.setMaxVisibleItems(15)
         self.prompt_project.currentIndexChanged.connect(self.invalidate_prompt_preview)
-        prompt_layout.addWidget(QLabel("Gespeicherten Entwicklungsauftrag auswählen"))
+        selection_layout.addWidget(QLabel("Gespeicherten Entwicklungsauftrag auswählen"))
         self.prompt_job = QComboBox()
         self.prompt_job.addItem("Kein Auftrag ausgewählt", "")
         self.prompt_job.currentIndexChanged.connect(self.select_prompt_job)
-        prompt_layout.addWidget(self.prompt_job)
-        prompt_layout.addWidget(QLabel("Importiertes Codeprojekt (optional)"))
-        prompt_layout.addWidget(self.prompt_project)
+        selection_layout.addWidget(self.prompt_job)
+        selection_layout.addWidget(QLabel("Importiertes Codeprojekt (optional)"))
+        selection_layout.addWidget(self.prompt_project)
         reload_projects = QPushButton("Projektliste aktualisieren")
         reload_projects.clicked.connect(self.refresh_prompt_projects)
-        prompt_layout.addWidget(reload_projects)
+        selection_layout.addWidget(reload_projects)
         bind_project = QPushButton("Projekt dem ausgewählten Auftrag verbindlich zuordnen")
         bind_project.clicked.connect(self.bind_selected_project)
-        prompt_layout.addWidget(bind_project)
+        selection_layout.addWidget(bind_project)
         open_projects = QPushButton("Codeprojekt importieren / auswählen")
         open_projects.clicked.connect(lambda: self.tabs.setCurrentIndex(2))
-        prompt_layout.addWidget(open_projects)
-        prompt_layout.addWidget(QLabel("Projektzuordnung ist erst nach dem Speichern verbindlich. Änderungen widerrufen READY."))
-        prompt_layout.addWidget(QLabel("KI-Arbeitsmodus"))
+        selection_layout.addWidget(open_projects)
+        project_hint = QLabel("Die Zuordnung wird erst durch Speichern verbindlich; Änderungen widerrufen READY.")
+        project_hint.setWordWrap(True)
+        selection_layout.addWidget(project_hint)
+        task_group = QGroupBox("02  Entwicklungsaufgabe")
+        task_layout = QVBoxLayout(task_group)
+        prompt_layout.addWidget(task_group)
+        task_layout.addWidget(QLabel("KI-Arbeitsmodus"))
         self.prompt_mode = QComboBox()
         self.prompt_mode.addItems(list(MODES))
         self.prompt_mode.currentTextChanged.connect(self.invalidate_prompt_preview)
-        prompt_layout.addWidget(self.prompt_mode)
+        task_layout.addWidget(self.prompt_mode)
         self.prompt_task = QTextEdit()
         self.prompt_task.textChanged.connect(self.invalidate_prompt_preview)
         self.prompt_task.setPlaceholderText("Welche Änderung oder Untersuchung wünschst du?")
-        prompt_layout.addWidget(QLabel("Dein Originalauftrag"))
-        prompt_layout.addWidget(self.prompt_task)
+        task_layout.addWidget(QLabel("Dein Originalauftrag"))
+        task_layout.addWidget(self.prompt_task)
         self.prompt_provider = QComboBox()
         self.prompt_provider.addItems(["OpenAI", "LM Studio (lokal)"])
         self.prompt_provider.currentTextChanged.connect(self.provider_changed)
@@ -463,8 +474,13 @@ class MainWindow(QMainWindow):
         prompt_layout.addWidget(QLabel("2 · Idee und KI-Kontext prüfen"))
         self.context_preview = QTextEdit()
         self.context_preview.setReadOnly(True)
-        prompt_layout.addWidget(QLabel("Vorschau der Daten, die an den Anbieter gesendet werden"))
-        prompt_layout.addWidget(self.context_preview)
+        preview_splitter = QSplitter(Qt.Vertical)
+        preview_splitter.setChildrenCollapsible(False)
+        context_panel = QGroupBox("Anfragekontext · vor dem Senden prüfen")
+        context_panel_layout = QVBoxLayout(context_panel)
+        context_panel_layout.addWidget(self.context_preview)
+        preview_splitter.addWidget(context_panel)
+        prompt_layout.addWidget(preview_splitter, 1)
         preview_button = QPushButton("Kontext und Anfrage vorbereiten")
         preview_button.clicked.connect(self.prepare_prompt)
         prompt_layout.addWidget(preview_button)
@@ -475,9 +491,14 @@ class MainWindow(QMainWindow):
         prompt_layout.addWidget(self.send_button)
         self.prompt_result = QTextEdit()
         self.prompt_result.setReadOnly(True)
-        prompt_layout.addWidget(QLabel("KI-Ergebnis (nur Vorschlag, keine Ausführung)"))
-        prompt_layout.addWidget(self.prompt_result)
-        prompt_layout.addStretch()
+        result_panel = QGroupBox("KI-Ergebnis · Vorschlag, keine automatische Ausführung")
+        result_layout = QVBoxLayout(result_panel)
+        result_layout.addWidget(self.prompt_result)
+        copy_result = QPushButton("Ergebnis in die Zwischenablage kopieren")
+        copy_result.clicked.connect(lambda: QApplication.clipboard().setText(self.prompt_result.toPlainText()))
+        result_layout.addWidget(copy_result)
+        preview_splitter.addWidget(result_panel)
+        preview_splitter.setSizes([360, 260])
         prompt_layout = new_step()
         prompt_layout.addWidget(QLabel("3 · Rückfragen der KI prüfen"))
         prompt_layout.addWidget(QLabel("Anforderungsklärung · Fragen getrennt vom finalen Prompt"))
