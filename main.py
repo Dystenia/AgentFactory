@@ -9,6 +9,7 @@ import json
 from project_inspector import inspect_project, report_text
 from prompt_context import collect_context, build_request, SYSTEM_PROMPT
 from model_router import generate, list_openai_models, ModelError
+from cost_budget import price_record, check_budget, estimated_cost, money, BudgetError
 from project_analysis import MODES, system_prompt_for
 from project_access import validate_project_root
 import job_workflow
@@ -117,12 +118,17 @@ def connect_db():
         commit_sha TEXT NOT NULL, proposal_json TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS api_spend (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL,
+        input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+        cost_usd TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
     conn.commit()
     return conn
 
 
 class PromptWorker(QThread):
-    succeeded = Signal(str)
+    succeeded = Signal(object)
     failed = Signal(str)
 
     def __init__(self, provider, model, payload, mode, api_key, max_output_tokens):
@@ -132,13 +138,13 @@ class PromptWorker(QThread):
 
     def run(self):
         try:
-            self.succeeded.emit(generate(self.provider, self.model, system_prompt_for(self.mode), self.payload, api_key=self.api_key, max_output_tokens=self.max_output_tokens))
+            self.succeeded.emit(generate(self.provider, self.model, system_prompt_for(self.mode), self.payload, api_key=self.api_key, max_output_tokens=self.max_output_tokens, return_usage=True))
         except Exception as exc:
             self.failed.emit(str(exc) if isinstance(exc, ModelError) else "Unerwarteter Anbieterfehler.")
 
 
 class ProposalWorker(QThread):
-    succeeded = Signal(str)
+    succeeded = Signal(object)
     failed = Signal(str)
 
     def __init__(self, provider, model, payload, api_key, budget):
@@ -154,14 +160,14 @@ class ProposalWorker(QThread):
                 "neue Dateiinhalt, keine Diffs oder Markdown. Bearbeite nur die angegebene Datei. "
                 "Wenn du die Änderung nicht sicher vornehmen kannst, melde den Grund in summary "
                 "und lasse content unverändert.",
-                self.payload, api_key=self.api_key, max_output_tokens=self.budget)
+                self.payload, api_key=self.api_key, max_output_tokens=self.budget, return_usage=True)
             self.succeeded.emit(result)
         except Exception as exc:
             self.failed.emit(str(exc) if isinstance(exc, ModelError) else "KI-Anfrage fehlgeschlagen.")
 
 
 class ProjectGenerationWorker(QThread):
-    succeeded = Signal(str)
+    succeeded = Signal(object)
     failed = Signal(str)
 
     def __init__(self, provider, model, payload, api_key, budget):
@@ -182,7 +188,7 @@ class ProjectGenerationWorker(QThread):
                 "README und Tests; Steuerberechnung nur als explizit nicht implementiert kennzeichnen. "
                 "Die Rentenversicherungspflicht bei Selbstständigen wird vom Benutzer gesetzt, "
                 "nicht rechtlich automatisch festgestellt.",
-                self.payload, api_key=self.api_key, max_output_tokens=self.budget
+                self.payload, api_key=self.api_key, max_output_tokens=self.budget, return_usage=True
             )
             self.succeeded.emit(result)
         except Exception as exc:
@@ -424,6 +430,15 @@ class MainWindow(QMainWindow):
         self.output_budget.addItems(["4096", "8192", "12000", "16000", "24000", "32000", "65536"])
         self.output_budget.setCurrentText("12000")
         self.output_budget.currentTextChanged.connect(self.invalidate_prompt_preview)
+        self.usd_limit = QLineEdit("5.00")
+        self.usd_limit.setPlaceholderText("USD-Budget, z. B. 5.00")
+        self.usd_input_price = QLineEdit()
+        self.usd_input_price.setPlaceholderText("USD pro 1 Mio. Input-Tokens (verifiziert)")
+        self.usd_output_price = QLineEdit()
+        self.usd_output_price.setPlaceholderText("USD pro 1 Mio. Output-Tokens (verifiziert)")
+        self.usd_price_date = QLineEdit()
+        self.usd_price_date.setPlaceholderText("Preisstand YYYY-MM-DD")
+        self.usd_status = QLabel("USD-Kostenkontrolle: Preise eintragen, bevor OpenAI verwendet wird.")
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.Password)
         self.api_key.setPlaceholderText("OpenAI API-Key (nur für diese Sitzung; nicht gespeichert)")
@@ -575,6 +590,13 @@ class MainWindow(QMainWindow):
         system_layout.addWidget(refresh_models)
         system_label("Maximale Ausgabe-Tokens")
         system_layout.addWidget(self.output_budget)
+        system_label("USD-Budget (global, bereits verbrauchte Kosten werden aus SQLite geladen)")
+        system_layout.addWidget(self.usd_limit)
+        system_label("Verifizierte Modellpreise – Input und Output jeweils USD / 1 Mio. Tokens")
+        system_layout.addWidget(self.usd_input_price)
+        system_layout.addWidget(self.usd_output_price)
+        system_layout.addWidget(self.usd_price_date)
+        system_layout.addWidget(self.usd_status)
         system_label("OpenAI API-Schlüssel")
         system_layout.addWidget(self.api_key)
         system_label("KI-Sperre · blockiert neue KI-Anfragen und Dateischreibvorgänge")
@@ -973,6 +995,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No
             ) != QMessageBox.Yes:
                 return
+            self.authorize_api_cost(provider, self.prompt_model.currentText(), state["final_prompt"], int(self.output_budget.currentText()))
             self.project_generation_context = (job_id, root, info["commit"], self.stop_generation)
             self.project_generate_button.setEnabled(False)
             self.project_generation_preview.setPlainText("Projektvorschlag wird generiert …")
@@ -988,7 +1011,7 @@ class MainWindow(QMainWindow):
             self.project_generation_worker.failed.connect(self.fail_project_generation)
             self.project_generation_worker.finished.connect(self.project_generation_worker.deleteLater)
             self.project_generation_worker.start()
-        except (ValueError, OSError, sqlite3.Error) as exc:
+        except (ValueError, OSError, sqlite3.Error, BudgetError) as exc:
             QMessageBox.warning(self, "Projektgenerierung", str(exc))
 
     def fail_project_generation(self, message):
@@ -998,6 +1021,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Projektgenerierung", message)
 
     def receive_project_generation(self, raw):
+        raw = self.record_api_cost(raw)
         self.project_generate_button.setEnabled(True)
         context = getattr(self, "project_generation_context", None)
         self.project_generation_context = None
@@ -1099,6 +1123,7 @@ class MainWindow(QMainWindow):
                 + " übertragen. Fortfahren?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if answer != QMessageBox.Yes:
                 return
+            self.authorize_api_cost(provider, self.prompt_model.currentText(), payload, int(self.output_budget.currentText()))
             self.proposal_context = (job_id, root, relative, sha, info["commit"])
             self.proposal_request_generation = self.stop_generation
             self.proposal_button.setEnabled(False)
@@ -1109,7 +1134,7 @@ class MainWindow(QMainWindow):
             self.proposal_worker.failed.connect(self.fail_ai_edit)
             self.proposal_worker.finished.connect(self.proposal_worker.deleteLater)
             self.proposal_worker.start()
-        except (ValueError, OSError, UnicodeError, EditRejected, sqlite3.Error) as exc:
+        except (ValueError, OSError, UnicodeError, EditRejected, sqlite3.Error, BudgetError) as exc:
             QMessageBox.warning(self, "KI-Codevorschlag", str(exc))
 
     def fail_ai_edit(self, message):
@@ -1118,6 +1143,7 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "KI-Codevorschlag", message)
 
     def receive_ai_edit(self, raw):
+        raw = self.record_api_cost(raw)
         if emergency.stopped:
             return
         if self.emergency_stop or self.proposal_request_generation != self.stop_generation:
@@ -1335,6 +1361,37 @@ class MainWindow(QMainWindow):
             self.send_button.setEnabled(False)
             QMessageBox.warning(self, "Kontextprüfung", str(exc))
 
+    def authorize_api_cost(self, provider, model, payload, output_tokens):
+        if provider != "OpenAI":
+            self.pending_cost = None
+            return
+        price = price_record(model, self.usd_input_price.text(), self.usd_output_price.text(),
+                             self.usd_price_date.text())
+        # Conservative approximation for UTF-8 text; not a provider-guaranteed upper bound.
+        estimated_input = max(1000, len(payload.encode("utf-8")))
+        spent = sum((money(row[0]) for row in self.db.execute("SELECT cost_usd FROM api_spend")), money("0"))
+        estimate = check_budget(self.usd_limit.text(), spent, price, estimated_input, output_tokens)
+        self.pending_cost = (model, price)
+        self.usd_status.setText(f"Verbraucht: {spent} USD · nächster Aufruf geschätzt: {estimate} USD")
+
+    def record_api_cost(self, response):
+        if not isinstance(response, tuple) or len(response) != 2:
+            return response
+        raw, usage = response
+        pending = getattr(self, "pending_cost", None)
+        self.pending_cost = None
+        if pending and usage:
+            model, price = pending
+            amount = estimated_cost(usage["input_tokens"], usage["output_tokens"], price)
+            self.db.execute("INSERT INTO api_spend (model, input_tokens, output_tokens, cost_usd) VALUES (?, ?, ?, ?)",
+                            (model, usage["input_tokens"], usage["output_tokens"], str(amount)))
+            self.db.commit()
+            spent = sum((money(row[0]) for row in self.db.execute("SELECT cost_usd FROM api_spend")), money("0"))
+            self.usd_status.setText(f"Verbraucht: {spent} USD (gemeldete Tokens)")
+        elif pending:
+            self.usd_status.setText("Keine Nutzungsdaten vom Anbieter: Kosten unklar – weitere Aufrufe prüfen.")
+        return raw
+
     def send_prompt(self):
         if emergency.stopped:
             return
@@ -1372,6 +1429,11 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             self.workflow_request = None
             return
+        try:
+            self.authorize_api_cost(identity[2], identity[3], self.prepared_payload, int(identity[5]))
+        except BudgetError as exc:
+            QMessageBox.warning(self, "USD-Budget", str(exc))
+            return
         self.send_button.setEnabled(False)
         self.prompt_result.setPlainText("Anfrage läuft …")
         self.prompt_request_generation = self.stop_generation
@@ -1382,6 +1444,7 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def prompt_success(self, text):
+        text = self.record_api_cost(text)
         if emergency.stopped:
             return
         if self.emergency_stop or self.prompt_request_generation != self.stop_generation:
