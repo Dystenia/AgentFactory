@@ -29,6 +29,20 @@ class ProjectProposalTests(unittest.TestCase):
                 {"path": "main.py", "content": "b"},
             ]))
 
+    def test_allow_web_assets(self):
+        data = parse_project_proposal(self.proposal([
+            {"path": "templates/index.html", "content": "<h1>TaxCalculator</h1>"},
+            {"path": "static/app.css", "content": "body { margin: 0; }"},
+            {"path": "static/app.js", "content": "console.log('ready');"},
+        ]))
+        self.assertEqual(len(data["files"]), 3)
+
+    def test_rejected_type_mentions_filename(self):
+        with self.assertRaisesRegex(ProjectProposalError, "install.ps1"):
+            parse_project_proposal(self.proposal([
+                {"path": "install.ps1", "content": "x"}
+            ]))
+
     def test_reject_executable_extension(self):
         with self.assertRaises(ProjectProposalError):
             parse_project_proposal(self.proposal([{"path": "install.ps1", "content": "x"}]))
