@@ -739,10 +739,10 @@ class MainWindow(QMainWindow):
             sha = hashlib.sha256(original).hexdigest()
             preview_edit(root, relative, sha, source)
             state = job_workflow.get(self.db, job_id)
-            payload = ("FREIGEGEBENER ENTWICKLUNGSAUFTRAG:\\n" + state["final_prompt"]
-                + "\\n\\nBEARBEITE AUSSCHLIESSLICH DIE DATEI: " + relative
-                + "\\n\\nAKTUELLER DATEIINHALT:\\n" + source
-                + "\\n\\nGib exakt ein JSON-Objekt mit path, content, summary zurück.")
+            payload = ("FREIGEGEBENER ENTWICKLUNGSAUFTRAG:\n" + state["final_prompt"]
+                + "\n\nBEARBEITE AUSSCHLIESSLICH DIE DATEI: " + relative
+                + "\n\nAKTUELLER DATEIINHALT:\n" + source
+                + "\n\nGib exakt ein JSON-Objekt mit path, content, summary zurück.")
             provider = self.prompt_provider.currentText()
             answer = QMessageBox.question(self, "KI-Codevorschlag",
                 "Der vollständige Inhalt von " + relative
@@ -789,7 +789,7 @@ class MainWindow(QMainWindow):
             self.edit_diff.clear()
             self.preview_approved_edit()
             QMessageBox.information(self, "KI-Vorschlag",
-                proposal["summary"] + "\\n\\nBitte den Diff prüfen. Schreiben erfordert eine weitere Freigabe.")
+                proposal["summary"] + "\n\nBitte den Diff prüfen. Schreiben erfordert eine weitere Freigabe.")
         except (ValueError, OSError, UnicodeError, EditRejected, ProposalError, sqlite3.Error) as exc:
             QMessageBox.warning(self, "KI-Vorschlag verworfen", str(exc))
 
