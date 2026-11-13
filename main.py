@@ -1009,8 +1009,8 @@ class MainWindow(QMainWindow):
             if not info["clean"] or info["commit"] != commit:
                 raise ValueError("Git-Zustand hat sich geändert.")
             paths = [entry["path"] for entry in proposal["files"]]
-            question = ("Folgende NEUE Dateien werden im ausgewählten Git-Arbeitsordner erstellt:\\n\\n"
-                        + "\\n".join(paths) + "\\n\\n"
+            question = ("Folgende NEUE Dateien werden im ausgewählten Git-Arbeitsordner erstellt:\n\n"
+                        + "\n".join(paths) + "\n\n"
                         "Vorhandene Dateien werden nicht überschrieben. Kein Test, Commit oder Push. "
                         "Dateien jetzt ausdrücklich freigeben?")
             if QMessageBox.question(self, "Projektdateien schreiben", question,
@@ -1020,7 +1020,7 @@ class MainWindow(QMainWindow):
             written = apply_project_proposal(root, proposal, commit, approved=True)
             self.validated_project_proposal = None
             self.project_apply_button.setEnabled(False)
-            self.project_generation_preview.append("\\nDATEIEN ERSTELLT (nicht committed):\\n" + "\\n".join(written))
+            self.project_generation_preview.append("\nDATEIEN ERSTELLT (nicht committed):\n" + "\n".join(written))
             QMessageBox.information(self, "Projektdateien erstellt",
                                     "Erstellt: " + str(len(written)) + " Dateien. Bitte Git-Diff und Tests prüfen.")
         except (ValueError, OSError, sqlite3.Error, ProjectProposalError) as exc:
