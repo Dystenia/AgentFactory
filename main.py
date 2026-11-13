@@ -663,6 +663,42 @@ class MainWindow(QMainWindow):
             control.setMinimumWidth(0)
             control.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         tabs.addTab(self.scroll_tab(system_page, horizontal=False), "System")
+        # Overview is appended so existing tab indices and callbacks remain stable.
+        dashboard = QWidget()
+        dashboard_layout = QVBoxLayout(dashboard)
+        dashboard_layout.setSpacing(12)
+        dashboard_title = QLabel("Übersicht · AgentFactory")
+        dashboard_title.setStyleSheet("font-size: 19px; font-weight: 700; color: #67e8f9;")
+        dashboard_layout.addWidget(dashboard_title)
+        dashboard_layout.addWidget(QLabel("Lokaler Status deiner Projekte, Aufträge und erfassten API-Kosten"))
+        self.dashboard_metrics = QLabel()
+        self.dashboard_metrics.setWordWrap(True)
+        self.dashboard_metrics.setStyleSheet(
+            "background-color: #1d2430; border: 1px solid #344154; "
+            "border-radius: 8px; padding: 16px; font-size: 14px;"
+        )
+        dashboard_layout.addWidget(self.dashboard_metrics)
+        dashboard_layout.addWidget(QLabel("Zuletzt angelegte Entwicklungsaufträge"))
+        self.dashboard_jobs = QTableWidget(0, 3)
+        self.dashboard_jobs.setHorizontalHeaderLabels(["Auftrag", "Status", "Projekt"])
+        self.dashboard_jobs.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.dashboard_jobs.setSelectionBehavior(QTableWidget.SelectRows)
+        self.dashboard_jobs.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.dashboard_jobs.setAlternatingRowColors(True)
+        self.dashboard_jobs.cellDoubleClicked.connect(self.open_dashboard_job)
+        dashboard_layout.addWidget(self.dashboard_jobs, 1)
+        dashboard_actions = QHBoxLayout()
+        for label, target in (("Auftrag erstellen", 0), ("Aufträge öffnen", 1),
+                              ("Projekte öffnen", 2), ("KI-Entwicklung", 3),
+                              ("Einstellungen", 4)):
+            action = QPushButton(label)
+            action.clicked.connect(lambda checked=False, page=target: self.tabs.setCurrentIndex(page))
+            dashboard_actions.addWidget(action)
+        dashboard_layout.addLayout(dashboard_actions)
+        refresh_dashboard = QPushButton("Übersicht aktualisieren")
+        refresh_dashboard.clicked.connect(self.refresh_dashboard)
+        dashboard_layout.addWidget(refresh_dashboard)
+        self.dashboard_index = tabs.addTab(self.scroll_tab(dashboard), "Übersicht")
         # Navigation uses the existing tab pages, preserving their widgets and signals.
         self.nav_expanded = True
         self.nav_panel = QWidget()
@@ -677,6 +713,7 @@ class MainWindow(QMainWindow):
         self.nav_layout.addWidget(self.nav_toggle)
         self.nav_buttons = []
         navigation = [
+            ("⌂", "Übersicht"),
             ("▤", "1 · Auftrag erstellen"),
             ("≡", "2 · Auftrag auswählen"),
             ("▣", "3 · Projekt zuordnen"),
@@ -684,12 +721,14 @@ class MainWindow(QMainWindow):
             ("⚙", "Einstellungen"),
         ]
         for index, (symbol, label) in enumerate(navigation):
+            page_index = self.dashboard_index if index == 0 else index - 1
             button = QPushButton(symbol + "  " + label)
             button.setToolTip(label)
             button.setCheckable(True)
             button.setProperty("navSymbol", symbol)
             button.setProperty("navLabel", label)
-            button.clicked.connect(lambda checked=False, page=index: self.tabs.setCurrentIndex(page))
+            button.setProperty("pageIndex", page_index)
+            button.clicked.connect(lambda checked=False, page=page_index: self.tabs.setCurrentIndex(page))
             self.nav_layout.addWidget(button)
             self.nav_buttons.append(button)
         # Direct access to the five workflow phases without changing their state.
@@ -704,6 +743,7 @@ class MainWindow(QMainWindow):
         self.nav_layout.addStretch()
         tabs.tabBar().hide()
         tabs.currentChanged.connect(self.update_navigation_selection)
+        tabs.currentChanged.connect(self.refresh_dashboard_if_visible)
         # Persistent, read-only context: no duplicate editor state.
         self.context_strip = QLabel()
         self.context_strip.setObjectName("contextStrip")
@@ -734,6 +774,8 @@ class MainWindow(QMainWindow):
         self.refresh_prompt_jobs()
         self.refresh_existing_jobs()
         self.update_context_strip()
+        self.tabs.setCurrentIndex(self.dashboard_index)
+        self.refresh_dashboard()
 
     def update_context_strip(self, *_):
         """Show selected context without changing any workflow or budget state."""
@@ -749,6 +791,47 @@ class MainWindow(QMainWindow):
             f"AUFTRAG: {job}    |    PROJEKT: {project}\n"
             f"KI: {provider} / {model}    |    USD-Limit: {budget}    |    Preisangaben: {prices}"
         )
+
+    def refresh_dashboard_if_visible(self, index):
+        if index == self.dashboard_index:
+            self.refresh_dashboard()
+
+    def refresh_dashboard(self):
+        """Read-only overview; no API calls, workflow transitions or file writes."""
+        project_count = self.db.execute("SELECT COUNT(*) FROM imported_projects").fetchone()[0]
+        job_count = self.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        ready_count = self.db.execute("SELECT COUNT(*) FROM jobs WHERE status='READY'").fetchone()[0]
+        spend = self.db.execute("SELECT COALESCE(SUM(CAST(cost_usd AS REAL)), 0) FROM api_spend").fetchone()[0]
+        self.dashboard_metrics.setText(
+            f"Importierte Projekte: {project_count}     Entwicklungsaufträge: {job_count}     "
+            f"READY-Aufträge: {ready_count}     Erfasste API-Kosten: {spend:.4f} USD"
+        )
+        rows = self.db.execute(
+            "SELECT name, status, COALESCE(project_root, ''), id "
+            "FROM jobs ORDER BY created_at DESC LIMIT 25"
+        ).fetchall()
+        self.dashboard_jobs.setRowCount(len(rows))
+        for row_index, (name, status, root, job_id) in enumerate(rows):
+            name_item = QTableWidgetItem(name)
+            name_item.setData(Qt.UserRole, job_id)
+            self.dashboard_jobs.setItem(row_index, 0, name_item)
+            self.dashboard_jobs.setItem(row_index, 1, QTableWidgetItem(status))
+            self.dashboard_jobs.setItem(row_index, 2, QTableWidgetItem(
+                Path(root).name if root else "Nicht zugeordnet"
+            ))
+
+    def open_dashboard_job(self, row, _column):
+        item = self.dashboard_jobs.item(row, 0)
+        if item is None:
+            return
+        job_id = item.data(Qt.UserRole)
+        self.refresh_prompt_jobs()
+        index = self.prompt_job.findData(job_id)
+        if index < 0:
+            return
+        self.prompt_job.setCurrentIndex(index)
+        self.tabs.setCurrentIndex(self.prompt_tab_index)
+        self.show_workflow_step(0)
 
     def hard_emergency_stop(self):
         """Latch all local actions, terminate registered child trees, then exit."""
@@ -822,8 +905,8 @@ class MainWindow(QMainWindow):
             button.setVisible(self.nav_expanded)
 
     def update_navigation_selection(self, index):
-        for page, button in enumerate(self.nav_buttons):
-            button.setChecked(page == index)
+        for button in self.nav_buttons:
+            button.setChecked(button.property("pageIndex") == index)
             button.setStyleSheet(
                 "QPushButton { text-align: left; background-color: #164e63; border-color: #0891b2; }"
                 if page == index else "QPushButton { text-align: left; }"
