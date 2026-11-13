@@ -83,3 +83,23 @@ def approve(conn, job_id, displayed_prompt):
     with conn:
         conn.execute("""UPDATE job_workflows SET status='READY', approved_at=?, updated_at=?
             WHERE job_id=?""", (_now(), _now(), job_id))
+
+def bind_project(conn, job_id, root):
+    """Bind an imported project to a job; revoke approval if the binding changes."""
+    project = conn.execute("SELECT 1 FROM imported_projects WHERE root=?", (root,)).fetchone()
+    if not project:
+        raise ValueError("Bitte zuerst ein gespeichertes Codeprojekt auswählen.")
+    job = conn.execute("SELECT project_root FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if not job:
+        raise ValueError("Entwicklungsauftrag nicht gefunden.")
+    if (job[0] or "") == root:
+        return False
+    with conn:
+        conn.execute("UPDATE jobs SET project_root=? WHERE id=?", (root, job_id))
+        state = get(conn, job_id)
+        if state:
+            status = "FINAL_REVIEW" if state["final_prompt"].strip() else "DRAFT"
+            conn.execute("UPDATE job_workflows SET status=?, approved_at=NULL, updated_at=? WHERE job_id=?",
+                         (status, _now(), job_id))
+    return True
+
