@@ -1,3 +1,4 @@
+from decimal import Decimal
 import pytest
 from cost_budget import BudgetError, price_record, estimated_cost, check_budget, usage_from_response
 
@@ -12,7 +13,7 @@ def test_limit_rejects_expensive_call():
 
 def test_limit_accepts_bounded_call():
     price = price_record("example-model", "1", "10", "2026-11-13")
-    assert check_budget("5", "1", price, 10_000, 10_000) == 0.11
+    assert check_budget("5", "1", price, 10_000, 10_000) == Decimal('0.11')
 
 def test_missing_price_date_rejected():
     with pytest.raises(BudgetError):
