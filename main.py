@@ -219,6 +219,8 @@ class MainWindow(QMainWindow):
         self.workflow_request = None
         self.emergency_stop = False
         self.stop_generation = 0
+        self.pending_cost = None
+        self.cost_unverified = False
         # Native decorated Windows window; keep it inside the usable desktop area.
         self.setWindowFlags(Qt.Window)
         self.setMinimumSize(560, 400)
@@ -1015,6 +1017,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Projektgenerierung", str(exc))
 
     def fail_project_generation(self, message):
+        if getattr(self, "pending_cost", None):
+            self.cost_unverified = True
+            self.pending_cost = None
         self.project_generate_button.setEnabled(True)
         self.project_generation_context = None
         if not emergency.stopped and not self.emergency_stop:
@@ -1138,6 +1143,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "KI-Codevorschlag", str(exc))
 
     def fail_ai_edit(self, message):
+        if getattr(self, "pending_cost", None):
+            self.cost_unverified = True
+            self.pending_cost = None
         self.proposal_button.setEnabled(True)
         self.proposal_context = None
         QMessageBox.warning(self, "KI-Codevorschlag", message)
@@ -1362,6 +1370,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Kontextprüfung", str(exc))
 
     def authorize_api_cost(self, provider, model, payload, output_tokens):
+        if getattr(self, "pending_cost", None):
+            raise BudgetError("Es läuft bereits eine kostenpflichtige Anfrage. Bitte deren Abschluss abwarten.")
+        if getattr(self, "cost_unverified", False) and provider == "OpenAI":
+            raise BudgetError("Kosten einer früheren Anfrage sind unklar. Bitte zuerst den API-Verbrauch beim Anbieter abgleichen und AgentFactory neu starten.")
         if provider != "OpenAI":
             self.pending_cost = None
             return
@@ -1389,6 +1401,7 @@ class MainWindow(QMainWindow):
             spent = sum((money(row[0]) for row in self.db.execute("SELECT cost_usd FROM api_spend")), money("0"))
             self.usd_status.setText(f"Verbraucht: {spent} USD (gemeldete Tokens)")
         elif pending:
+            self.cost_unverified = True
             self.usd_status.setText("Keine Nutzungsdaten vom Anbieter: Kosten unklar – weitere Aufrufe prüfen.")
         return raw
 
@@ -1475,6 +1488,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Workflow", str(exc))
 
     def prompt_failure(self, error):
+        if getattr(self, "pending_cost", None):
+            self.cost_unverified = True
+            self.pending_cost = None
         if self.emergency_stop or self.prompt_request_generation != self.stop_generation:
             return
         self.workflow_request = None
