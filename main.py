@@ -23,7 +23,7 @@ from PySide6.QtGui import QColor, QPalette, QIcon
 from PySide6.QtWidgets import (QApplication, QComboBox, QFormLayout, QHBoxLayout,
                                QLabel, QLineEdit, QMainWindow, QMessageBox,
                                QPushButton, QTableWidget, QTableWidgetItem,
-                               QTextEdit, QVBoxLayout, QWidget, QFileDialog, QTabWidget, QScrollArea, QSizePolicy, QInputDialog)
+                               QTextEdit, QVBoxLayout, QWidget, QFileDialog, QTabWidget, QScrollArea, QSizePolicy, QInputDialog, QStackedWidget)
 
 APP_DIR = Path(__file__).resolve().parent
 ICON_PATH = APP_DIR / "assets" / "dystenia_agent_factory.ico"
@@ -293,8 +293,28 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.scroll_tab(self.import_tab), "Bestehende Projekte")
         prompt_tab = QWidget()
         self.prompt_tab = prompt_tab
-        prompt_layout = QVBoxLayout(prompt_tab)
-        prompt_layout.addWidget(QLabel("Prompt Studio · KI-Aufrufe nur nach ausdrücklicher Freigabe"))
+        prompt_root = QVBoxLayout(prompt_tab)
+        prompt_root.addWidget(QLabel("Entwicklungsassistent · Idee → Prüfung → Rückfragen → Antworten → Arbeiten"))
+        self.workflow_pages = QStackedWidget()
+        self.workflow_step_buttons = []
+        step_bar = QHBoxLayout()
+        for step, label in enumerate(("Idee", "Prüfung", "Rückfragen", "Antworten", "Arbeiten")):
+            button = QPushButton(f"{step + 1} · {label}")
+            button.setCheckable(True)
+            button.clicked.connect(lambda checked=False, index=step: self.show_workflow_step(index))
+            self.workflow_step_buttons.append(button)
+            step_bar.addWidget(button)
+        prompt_root.addLayout(step_bar)
+        prompt_root.addWidget(self.workflow_pages, 1)
+
+        def new_step():
+            page = QWidget()
+            page_layout = QVBoxLayout(page)
+            self.workflow_pages.addWidget(self.scroll_tab(page))
+            return page_layout
+
+        prompt_layout = new_step()
+        prompt_layout.addWidget(QLabel("1 · Idee und Projekt auswählen"))
         self.prompt_project = QComboBox()
         self.prompt_project.setMinimumWidth(240)
         self.prompt_project.setMaxVisibleItems(15)
@@ -357,6 +377,9 @@ class MainWindow(QMainWindow):
         key_row.addWidget(QLabel("OpenAI API-Key"))
         key_row.addWidget(self.api_key)
         prompt_layout.addLayout(key_row)
+        prompt_layout.addStretch()
+        prompt_layout = new_step()
+        prompt_layout.addWidget(QLabel("2 · Idee und KI-Kontext prüfen"))
         self.context_preview = QTextEdit()
         self.context_preview.setReadOnly(True)
         prompt_layout.addWidget(QLabel("Vorschau der Daten, die an den Anbieter gesendet werden"))
@@ -373,6 +396,9 @@ class MainWindow(QMainWindow):
         self.prompt_result.setReadOnly(True)
         prompt_layout.addWidget(QLabel("KI-Ergebnis (nur Vorschlag, keine Ausführung)"))
         prompt_layout.addWidget(self.prompt_result)
+        prompt_layout.addStretch()
+        prompt_layout = new_step()
+        prompt_layout.addWidget(QLabel("3 · Rückfragen der KI prüfen"))
         prompt_layout.addWidget(QLabel("Anforderungsklärung · Fragen getrennt vom finalen Prompt"))
         self.clarification_questions = QTextEdit()
         self.clarification_questions.setReadOnly(True)
@@ -389,6 +415,9 @@ class MainWindow(QMainWindow):
         save_answers.clicked.connect(self.store_clarification_answers)
         clarify_actions.addWidget(save_answers)
         prompt_layout.addLayout(clarify_actions)
+        prompt_layout.addStretch()
+        prompt_layout = new_step()
+        prompt_layout.addWidget(QLabel("4 · Antworten auswerten und finalen Auftrag freigeben"))
         self.final_prompt = QTextEdit()
         self.final_prompt.setPlaceholderText("Finaler Auftrag: KI-Vorschlag prüfen und bei Bedarf bearbeiten.")
         prompt_layout.addWidget(QLabel("Finaler Entwicklungsauftrag · vor Freigabe editierbar"))
@@ -406,7 +435,10 @@ class MainWindow(QMainWindow):
         prompt_layout.addLayout(final_actions)
         self.workflow_status = QLabel("Workflow: Bitte gespeicherten Auftrag auswählen")
         prompt_layout.addWidget(self.workflow_status)
-        prompt_layout.addWidget(QLabel("Phase 2 · Git-Projektprüfung (nur lesend)"))
+        prompt_layout.addStretch()
+        prompt_layout = new_step()
+        prompt_layout.addWidget(QLabel("5 · Arbeiten · Änderungen prüfen und freigeben"))
+        prompt_layout.addWidget(QLabel("Git-Projektprüfung (nur lesend)"))
         self.git_preflight_button = QPushButton("6 · Freigegebenes Projekt und Git-Status prüfen")
         self.git_preflight_button.clicked.connect(self.check_approved_project)
         prompt_layout.addWidget(self.git_preflight_button)
@@ -439,7 +471,9 @@ class MainWindow(QMainWindow):
         self.proposal_button = QPushButton("KI-Änderung für diese Datei vorschlagen")
         self.proposal_button.clicked.connect(self.request_ai_edit)
         prompt_layout.addWidget(self.proposal_button)
-        self.prompt_tab_index = tabs.addTab(self.scroll_tab(prompt_tab), "Prompt Studio")
+        prompt_layout.addStretch()
+        self.show_workflow_step(0)
+        self.prompt_tab_index = tabs.addTab(prompt_tab, "Entwicklungsassistent")
         # Navigation uses the existing tab pages, preserving their widgets and signals.
         self.nav_expanded = True
         self.nav_panel = QWidget()
@@ -457,7 +491,7 @@ class MainWindow(QMainWindow):
             ("▤", "Entwicklungsaufträge"),
             ("≡", "Bestehende Aufträge"),
             ("▣", "Codeprojekte"),
-            ("⌘", "Prompt Studio"),
+            ("⌘", "Entwicklungsassistent"),
         ]
         for index, (symbol, label) in enumerate(navigation):
             button = QPushButton(symbol + "  " + label)
@@ -483,6 +517,15 @@ class MainWindow(QMainWindow):
         self.refresh()
         self.refresh_prompt_jobs()
         self.refresh_existing_jobs()
+
+    def show_workflow_step(self, index):
+        self.workflow_pages.setCurrentIndex(index)
+        for step, button in enumerate(self.workflow_step_buttons):
+            button.setChecked(step == index)
+            button.setStyleSheet(
+                "QPushButton { background-color: #164e63; border-color: #0891b2; }"
+                if step == index else ""
+            )
 
     def toggle_navigation(self):
         self.nav_expanded = not self.nav_expanded
