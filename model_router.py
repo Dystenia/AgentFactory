@@ -7,7 +7,7 @@ import urllib.error
 class ModelError(RuntimeError):
     pass
 
-def generate(provider, model, system_prompt, user_prompt, timeout=180, api_key=None, max_output_tokens=12000):
+def generate(provider, model, system_prompt, user_prompt, timeout=180, api_key=None, max_output_tokens=12000, return_usage=False):
     if not isinstance(max_output_tokens, int) or not 1024 <= max_output_tokens <= 65536:
         raise ModelError('Output-Tokenbudget muss zwischen 1024 und 65536 liegen.')
     if not model or not model.strip():
@@ -61,6 +61,9 @@ def generate(provider, model, system_prompt, user_prompt, timeout=180, api_key=N
                 "Bitte Modell und Tokenbudget prüfen."
             )
         raise ModelError("Der lokale Anbieter hat keinen Text zurückgegeben.")
+    if return_usage:
+        from cost_budget import usage_from_response
+        return result, usage_from_response(provider, data)
     return result
 
 def list_openai_models(api_key=None, timeout=20):
