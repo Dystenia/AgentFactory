@@ -721,7 +721,17 @@ class MainWindow(QMainWindow):
             if not info["clean"]:
                 raise ValueError("Git-Arbeitsverzeichnis muss sauber sein.")
             # The existing controlled_edit.preview validates Git tracking and path safety.
-            target = Path(root) / relative
+            rel = Path(relative)
+            if not relative or rel.is_absolute() or ".." in rel.parts or "\\\\" in relative:
+                raise ValueError("Ungültiger relativer Dateipfad.")
+            current = Path(root)
+            for part in rel.parts:
+                current = current / part
+                if current.is_symlink() or (hasattr(current, "is_junction") and current.is_junction()):
+                    raise ValueError("Symlink/Junction nicht erlaubt.")
+            target = current
+            if not target.is_file() or not target.resolve().is_relative_to(Path(root).resolve()):
+                raise ValueError("Datei liegt außerhalb des Projekts oder existiert nicht.")
             original = target.read_bytes()
             if len(original) > 120_000:
                 raise ValueError("Datei ist für einen Einzeldatei-KI-Vorschlag zu groß.")
