@@ -175,6 +175,7 @@ class ProposalWorker(QThread):
 class ProjectGenerationWorker(QThread):
     succeeded = Signal(object)
     failed = Signal(str)
+    diagnostic = Signal(str)
 
     def __init__(self, provider, model, payload, api_key, budget):
         super().__init__()
@@ -195,7 +196,8 @@ class ProjectGenerationWorker(QThread):
                 "Fehlerbehandlung und gezielten Tests, soweit für den Auftrag sinnvoll. "
                 "Keine erfundenen Fachwerte, APIs oder bereits ausgeführten Tests behaupten. "
                 "Die Dateien sind nur ein Vorschlag und werden erst nach Freigabe geschrieben.",
-                self.payload, api_key=self.api_key, max_output_tokens=self.budget, return_usage=True
+                self.payload, api_key=self.api_key, max_output_tokens=self.budget,
+                return_usage=True, diagnostic=self.diagnostic.emit
             )
             self.succeeded.emit(result)
         except Exception as exc:
@@ -593,6 +595,7 @@ class MainWindow(QMainWindow):
         generation_layout.addWidget(self.project_apply_button)
         self.validated_project_proposal = None
         self.project_generation_started = None
+        self.project_generation_diagnostics = []
         self.project_generation_timer = QTimer(self)
         self.project_generation_timer.setInterval(1000)
         self.project_generation_timer.timeout.connect(self.update_project_generation_elapsed)
@@ -1267,6 +1270,11 @@ class MainWindow(QMainWindow):
             self.git_preflight_result.setPlainText("")
             QMessageBox.warning(self, "Git-Projektprüfung", str(exc))
 
+    def add_project_generation_diagnostic(self, message):
+        self.project_generation_diagnostics.append(message)
+        self.project_generation_diagnostics = self.project_generation_diagnostics[-12:]
+        self.update_project_generation_elapsed()
+
     def update_project_generation_elapsed(self):
         if self.project_generation_started is None:
             return
@@ -1275,7 +1283,8 @@ class MainWindow(QMainWindow):
         self.project_generation_preview.setPlainText(
             f"KI-Anfrage läuft seit {minutes:02d}:{seconds:02d} Minuten.\n"
             "Warte auf vollständige API-Antwort; kein Streaming verfügbar.\n"
-            "Noch keine Projektdateien geändert."
+            "Noch keine Projektdateien geändert.\n\n" +
+            "\n".join(self.project_generation_diagnostics)
         )
 
     def finish_project_generation_wait(self):
@@ -1309,6 +1318,7 @@ class MainWindow(QMainWindow):
                 return
             self.project_generation_context = (job_id, root, info["commit"], self.stop_generation)
             self.project_generate_button.setEnabled(False)
+            self.project_generation_diagnostics = []
             self.project_generation_started = time.monotonic()
             self.project_generation_timer.start()
             self.update_project_generation_elapsed()
@@ -1334,6 +1344,7 @@ class MainWindow(QMainWindow):
                 int(self.output_budget.currentText()))
             self.project_generation_worker.succeeded.connect(self.receive_project_generation)
             self.project_generation_worker.failed.connect(self.fail_project_generation)
+            self.project_generation_worker.diagnostic.connect(self.add_project_generation_diagnostic)
             self.project_generation_worker.finished.connect(self.project_generation_worker.deleteLater)
             self.project_generation_worker.start()
         except (ValueError, OSError, sqlite3.Error, BudgetError) as exc:
