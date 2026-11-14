@@ -23,7 +23,8 @@ from project_proposal import parse_project_proposal, ProjectProposalError
 from project_apply import apply_project_proposal
 from multi_file_development import project_source_context, review_changes, apply_changes
 from emergency_control import emergency
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, Signal, QTimer
+import time
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette, QIcon, QShortcut, QKeySequence
@@ -591,6 +592,10 @@ class MainWindow(QMainWindow):
         self.project_apply_button.clicked.connect(self.apply_generated_project)
         generation_layout.addWidget(self.project_apply_button)
         self.validated_project_proposal = None
+        self.project_generation_started = None
+        self.project_generation_timer = QTimer(self)
+        self.project_generation_timer.setInterval(1000)
+        self.project_generation_timer.timeout.connect(self.update_project_generation_elapsed)
         self.single_file_section = QWidget()
         single_file_layout = QVBoxLayout(self.single_file_section)
         single_file_layout.setContentsMargins(0, 8, 0, 0)
@@ -1262,7 +1267,26 @@ class MainWindow(QMainWindow):
             self.git_preflight_result.setPlainText("")
             QMessageBox.warning(self, "Git-Projektprüfung", str(exc))
 
+    def update_project_generation_elapsed(self):
+        if self.project_generation_started is None:
+            return
+        elapsed = int(time.monotonic() - self.project_generation_started)
+        minutes, seconds = divmod(elapsed, 60)
+        self.project_generation_preview.setPlainText(
+            f"KI-Anfrage läuft seit {minutes:02d}:{seconds:02d} Minuten.\\n"
+            "Warte auf vollständige API-Antwort; kein Streaming verfügbar.\\n"
+            "Noch keine Projektdateien geändert."
+        )
+
+    def finish_project_generation_wait(self):
+        self.project_generation_timer.stop()
+        self.project_generation_started = None
+        self.project_generate_button.setEnabled(True)
+
     def request_project_generation(self):
+        if self.project_generation_started is not None:
+            QMessageBox.information(self, "Projektgenerierung", "Es läuft bereits eine KI-Anfrage.")
+            return
         self.validated_project_proposal = None
         self.project_apply_button.setEnabled(False)
         try:
@@ -1285,7 +1309,9 @@ class MainWindow(QMainWindow):
                 return
             self.project_generation_context = (job_id, root, info["commit"], self.stop_generation)
             self.project_generate_button.setEnabled(False)
-            self.project_generation_preview.setPlainText("Projektvorschlag wird generiert …")
+            self.project_generation_started = time.monotonic()
+            self.project_generation_timer.start()
+            self.update_project_generation_elapsed()
             payload = ("FREIGEGEBENER ENTWICKLUNGSAUFTRAG:\n" +
                        state["final_prompt"] +
                        "\n\nZIELPROJEKT: " + str(Path(root).name) +
@@ -1311,20 +1337,32 @@ class MainWindow(QMainWindow):
             self.project_generation_worker.finished.connect(self.project_generation_worker.deleteLater)
             self.project_generation_worker.start()
         except (ValueError, OSError, sqlite3.Error, BudgetError) as exc:
+            self.finish_project_generation_wait()
+            self.project_generation_context = None
+            self.project_generation_preview.setPlainText("Projektgenerierung nicht gestartet: " + str(exc))
             QMessageBox.warning(self, "Projektgenerierung", str(exc))
 
     def fail_project_generation(self, message):
         if getattr(self, "pending_cost", None):
             self.cost_unverified = True
             self.pending_cost = None
-        self.project_generate_button.setEnabled(True)
+        self.finish_project_generation_wait()
         self.project_generation_context = None
+        self.project_generation_preview.setPlainText(
+            "KI-Anfrage fehlgeschlagen: " + message +
+            "\\nKeine Projektdateien geschrieben. Prüfe Modell, Tokenbudget und Verbindung."
+        )
         if not emergency.stopped and not self.emergency_stop:
             QMessageBox.warning(self, "Projektgenerierung", message)
 
     def receive_project_generation(self, raw):
-        raw = self.record_api_cost(raw)
-        self.project_generate_button.setEnabled(True)
+        self.finish_project_generation_wait()
+        try:
+            raw = self.record_api_cost(raw)
+        except (ValueError, TypeError, sqlite3.Error) as exc:
+            self.project_generation_context = None
+            self.project_generation_preview.setPlainText("Antwort empfangen, Kostenverarbeitung fehlgeschlagen: " + str(exc))
+            return
         context = getattr(self, "project_generation_context", None)
         self.project_generation_context = None
         if emergency.stopped or self.emergency_stop or not context:
