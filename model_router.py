@@ -3,11 +3,12 @@ import json
 import os
 import urllib.request
 import urllib.error
+import time
 
 class ModelError(RuntimeError):
     pass
 
-def generate(provider, model, system_prompt, user_prompt, timeout=180, api_key=None, max_output_tokens=12000, return_usage=False):
+def generate(provider, model, system_prompt, user_prompt, timeout=180, api_key=None, max_output_tokens=12000, return_usage=False, diagnostic=None):
     if not isinstance(max_output_tokens, int) or not 1024 <= max_output_tokens <= 65536:
         raise ModelError('Output-Tokenbudget muss zwischen 1024 und 65536 liegen.')
     if not model or not model.strip():
@@ -28,15 +29,31 @@ def generate(provider, model, system_prompt, user_prompt, timeout=180, api_key=N
             {"role": "user", "content": user_prompt}], "max_tokens": max_output_tokens}
     else:
         raise ModelError("Unbekannter Modellanbieter.")
+    started = time.monotonic()
+    def report(message):
+        if diagnostic is not None:
+            diagnostic(message)
+    report("API-Anfrage vorbereitet: Anbieter=" + provider + ", Modell=" + model.strip() + ", Eingabezeichen=" + str(len(user_prompt)))
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", **headers}, method="POST")
     try:
+        report("Verbindung wird aufgebaut …")
         with urllib.request.urlopen(req, timeout=timeout) as response:
+            request_id = response.headers.get("x-request-id", "nicht verfügbar")
+            report(f"HTTP {response.status}; Anfrage-ID: {request_id}; Antwort wird gelesen …")
             data = json.loads(response.read(2_000_000).decode("utf-8"))
+        usage = data.get("usage") or {}
+        report("Antwort erhalten nach " + str(round(time.monotonic() - started, 1)) +
+               " s; Status=" + str(data.get("status", "unbekannt")) +
+               "; Input-Tokens=" + str(usage.get("input_tokens", "unbekannt")) +
+               "; Output-Tokens=" + str(usage.get("output_tokens", "unbekannt")))
     except urllib.error.HTTPError as exc:
-        # Avoid leaking request contents or auth headers in error messages.
-        raise ModelError(f"Anbieter meldet HTTP {exc.code}. Modell und API-Zugriff prüfen.") from None
+        request_id = exc.headers.get("x-request-id", "nicht verfügbar") if exc.headers else "nicht verfügbar"
+        report(f"HTTP-Fehler {exc.code}; Anfrage-ID: {request_id}")
+        raise ModelError(f"Anbieter meldet HTTP {exc.code} (Anfrage-ID: {request_id}). Modell und API-Zugriff prüfen.") from None
     except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+        report("Netzwerk-/Antwortfehler nach " + str(round(time.monotonic() - started, 1)) +
+               " s: " + type(exc).__name__)
         raise ModelError(f"Verbindung oder Antwort fehlgeschlagen: {type(exc).__name__}") from None
     if provider == "OpenAI":
         parts = [part.get("text", "") for item in data.get("output", [])
