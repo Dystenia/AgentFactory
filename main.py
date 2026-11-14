@@ -996,8 +996,8 @@ class MainWindow(QMainWindow):
         ).fetchone()
         if record:
             self.existing_job_details.setPlainText(
-                f"Auftrag: {record[0]}\\nUUID: {job_id}\\nTyp: {record[1]}\\n"
-                f"Status: {record[2]}\\nCodeprojekt: {record[4] or 'Noch nicht zugeordnet'}\\n\\n"
+                f"Auftrag: {record[0]}\\nUUID: {job_id}\\nTyp: {record[1]}\n"
+                f"Status: {record[2]}\\nCodeprojekt: {record[4] or 'Noch nicht zugeordnet'}\\n\n"
                 f"Anforderungen:\\n{record[3]}"
             )
 
@@ -1237,7 +1237,7 @@ class MainWindow(QMainWindow):
                 raise ValueError("Das Codeprojekt wurde nicht gefunden.")
             confirm = QMessageBox.question(
                 self, "Projekt verbindlich zuordnen",
-                "Projekt '" + row[0] + "' diesem Auftrag zuordnen?\\n"
+                "Projekt '" + row[0] + "' diesem Auftrag zuordnen?\n"
                 "Eine bestehende READY-Freigabe wird widerrufen; der finale Prompt bleibt erhalten.",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if confirm != QMessageBox.Yes:
@@ -1273,8 +1273,8 @@ class MainWindow(QMainWindow):
         elapsed = int(time.monotonic() - self.project_generation_started)
         minutes, seconds = divmod(elapsed, 60)
         self.project_generation_preview.setPlainText(
-            f"KI-Anfrage läuft seit {minutes:02d}:{seconds:02d} Minuten.\\n"
-            "Warte auf vollständige API-Antwort; kein Streaming verfügbar.\\n"
+            f"KI-Anfrage läuft seit {minutes:02d}:{seconds:02d} Minuten.\n"
+            "Warte auf vollständige API-Antwort; kein Streaming verfügbar.\n"
             "Noch keine Projektdateien geändert."
         )
 
@@ -1946,7 +1946,7 @@ class MainWindow(QMainWindow):
         self.clear_editor()
         self.name.setText(project_name)
         self.kind.setCurrentText("Bestehendes Projekt (Planung)")
-        self.description.setPlainText(f"Projekt: {project_name}\\n\\nGewünschte Änderungen:\\n")
+        self.description.setPlainText(f"Projekt: {project_name}\\n\\nGewünschte Änderungen:\n")
         index = self.job_project.findData(project_root)
         self.job_project.setCurrentIndex(index if index >= 0 else 0)
         self.tabs.setCurrentIndex(0)
