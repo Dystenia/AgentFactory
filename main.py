@@ -183,15 +183,16 @@ class ProjectGenerationWorker(QThread):
         try:
             result = generate(
                 self.provider, self.model,
-                "Du entwickelst ein Python-Webprojekt. Gib AUSSCHLIESSLICH ein JSON-Objekt "
+                "Du bist ein erfahrener Softwareentwickler. Implementiere den freigegebenen "
+                "Entwicklungsauftrag für das angegebene Projekt, ohne eine bestimmte Domäne "
+                "oder ein Framework vorauszusetzen. Gib AUSSCHLIESSLICH ein JSON-Objekt "
                 "mit exakt summary (String) und files (Liste) zurück. "
                 "Jede Datei hat exakt path (relativer POSIX-Pfad) und content (vollständiger UTF-8-Text). "
-                "Maximal 12 Dateien. Keine Markdown-Codeblöcke. Keine geheimen Schlüssel. "
-                "Keine erfundenen Steuersätze oder Versicherungsbeiträge. "
-                "Phase A: lauffähige FastAPI-Weboberfläche, Eingabevalidierung, Datenmodelle, "
-                "README und Tests; Steuerberechnung nur als explizit nicht implementiert kennzeichnen. "
-                "Die Rentenversicherungspflicht bei Selbstständigen wird vom Benutzer gesetzt, "
-                "nicht rechtlich automatisch festgestellt.",
+                "Maximal 12 Dateien. Keine Markdown-Codeblöcke und keine geheimen Schlüssel. "
+                "Erzeuge zusammenhängenden, nachvollziehbaren Code mit angemessener "
+                "Fehlerbehandlung und gezielten Tests, soweit für den Auftrag sinnvoll. "
+                "Keine erfundenen Fachwerte, APIs oder bereits ausgeführten Tests behaupten. "
+                "Die Dateien sind nur ein Vorschlag und werden erst nach Freigabe geschrieben.",
                 self.payload, api_key=self.api_key, max_output_tokens=self.budget, return_usage=True
             )
             self.succeeded.emit(result)
@@ -1284,10 +1285,15 @@ class MainWindow(QMainWindow):
             self.project_generation_context = (job_id, root, info["commit"], self.stop_generation)
             self.project_generate_button.setEnabled(False)
             self.project_generation_preview.setPlainText("Projektvorschlag wird generiert …")
-            payload = ("PHASE A – TAXCALCULATOR. Freigegebener Entwicklungsauftrag:\n" +
+            payload = ("FREIGEGEBENER ENTWICKLUNGSAUFTRAG:\n" +
                        state["final_prompt"] +
-                       "\n\nErzeuge einen zusammenhängenden, startfähigen Webanwendungs-Vorschlag. "
-                       "Noch keine Berechnung mit unbelegten Steuer- oder Beitragssätzen.")
+                       "\n\nZIELPROJEKT: " + str(Path(root).name) +
+                       "\nErstelle einen kohärenten Implementierungsvorschlag für diesen Auftrag. "
+                       "Nutze nur die beschriebenen Anforderungen; erfinde keine fachlichen "
+                       "Vorgaben. Berücksichtige die bestehenden Projektdateien und Schnittstellen "
+                       "nur soweit sie im bereitgestellten Kontext tatsächlich bekannt sind. "
+                       "Die Übernahme legt ausschließlich neue Dateien an; für Änderungen an "
+                       "bestehenden Dateien ist die Einzeldatei-Bearbeitung vorgesehen.")
             self.authorize_api_cost(provider, self.prompt_model.currentText(), payload, int(self.output_budget.currentText()))
             self.project_generation_worker = ProjectGenerationWorker(
                 provider, self.prompt_model.currentText(), payload,
