@@ -10,6 +10,7 @@ from project_inspector import inspect_project, report_text
 from prompt_context import collect_context, build_request, SYSTEM_PROMPT
 from model_router import generate, list_openai_models, ModelError
 from cost_budget import price_record, check_budget, estimated_cost, money, BudgetError
+from openai_pricing import fetch_standard_prices, PricingLookupError, PRICING_URL
 from project_analysis import MODES, system_prompt_for
 from project_access import validate_project_root
 import job_workflow
@@ -213,6 +214,17 @@ class ModelListWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class PricingWorker(QThread):
+    succeeded = Signal(object)
+    failed = Signal(str)
+
+    def run(self):
+        try:
+            self.succeeded.emit(fetch_standard_prices())
+        except PricingLookupError as exc:
+            self.failed.emit(str(exc))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -224,6 +236,7 @@ class MainWindow(QMainWindow):
         self.stop_generation = 0
         self.pending_cost = None
         self.cost_unverified = False
+        self.openai_price_snapshot = None
         # Native decorated Windows window; keep it inside the usable desktop area.
         self.setWindowFlags(Qt.Window)
         self.setMinimumSize(560, 400)
@@ -450,6 +463,7 @@ class MainWindow(QMainWindow):
         self.prompt_model.addItems(OPENAI_MODELS)
         self.prompt_model.setCurrentText("gpt-6-luna")
         self.prompt_model.currentTextChanged.connect(self.invalidate_prompt_preview)
+        self.prompt_model.currentTextChanged.connect(self.show_selected_model_price)
         refresh_models = QPushButton("Verfügbare OpenAI-Modelle abrufen")
         refresh_models.clicked.connect(self.refresh_openai_models)
         self.output_budget = QComboBox()
@@ -637,7 +651,13 @@ class MainWindow(QMainWindow):
         system_layout.addWidget(self.output_budget)
         system_label("USD-Budget (global, bereits verbrauchte Kosten werden aus SQLite geladen)")
         system_layout.addWidget(self.usd_limit)
-        system_label("Verifizierte Modellpreise – Input und Output jeweils USD / 1 Mio. Tokens")
+        system_label("Modellpreise · Standard / kurzer Kontext · USD pro 1 Mio. Tokens")
+        self.price_fetch_button = QPushButton("OpenAI-Preise von offizieller Seite abrufen")
+        self.price_fetch_button.clicked.connect(self.refresh_openai_prices)
+        system_layout.addWidget(self.price_fetch_button)
+        self.price_source_label = QLabel("Quelle: " + PRICING_URL + " · noch nicht abgerufen")
+        self.price_source_label.setWordWrap(True)
+        system_layout.addWidget(self.price_source_label)
         system_layout.addWidget(self.usd_input_price)
         system_layout.addWidget(self.usd_output_price)
         system_layout.addWidget(self.usd_price_date)
@@ -1051,6 +1071,64 @@ class MainWindow(QMainWindow):
             self.job_project.setCurrentIndex(max(0, index))
             self.job_project.blockSignals(False)
 
+    def refresh_openai_prices(self):
+        if self.prompt_provider.currentText() != "OpenAI":
+            QMessageBox.information(self, "Modellpreise", "Bitte OpenAI als Anbieter auswählen.")
+            return
+        self.price_fetch_button.setEnabled(False)
+        self.price_source_label.setText("Offizielle OpenAI-Preise werden abgerufen …")
+        self.pricing_worker = PricingWorker()
+        self.pricing_worker.succeeded.connect(self.openai_prices_received)
+        self.pricing_worker.failed.connect(self.openai_prices_failed)
+        self.pricing_worker.finished.connect(self.pricing_worker.deleteLater)
+        self.pricing_worker.start()
+
+    def openai_prices_received(self, snapshot):
+        self.price_fetch_button.setEnabled(True)
+        if self.emergency_stop or emergency.stopped:
+            return
+        self.openai_price_snapshot = snapshot
+        self.show_selected_model_price()
+
+    def openai_prices_failed(self, message):
+        self.price_fetch_button.setEnabled(True)
+        self.openai_price_snapshot = None
+        self.clear_auto_prices()
+        self.price_source_label.setText("Preisabruf fehlgeschlagen: " + message)
+
+    def clear_auto_prices(self):
+        self.usd_input_price.clear()
+        self.usd_output_price.clear()
+        self.usd_price_date.clear()
+        self.invalidate_prompt_preview()
+
+    def show_selected_model_price(self, *_):
+        if not hasattr(self, "usd_input_price"):
+            return
+        if self.prompt_provider.currentText() != "OpenAI":
+            self.clear_auto_prices()
+            return
+        snapshot = self.openai_price_snapshot
+        model = self.prompt_model.currentText()
+        price = snapshot["prices"].get(model) if snapshot else None
+        if not price:
+            self.clear_auto_prices()
+            if hasattr(self, "price_source_label"):
+                self.price_source_label.setText(
+                    "Kein eindeutiger Preis für " + model + ". Manuelle Prüfung erforderlich. "
+                    + PRICING_URL
+                )
+            return
+        self.usd_input_price.setText(price["input"])
+        self.usd_output_price.setText(price["output"])
+        self.usd_price_date.setText(snapshot["retrieved_at"])
+        self.price_source_label.setText(
+            f"Quelle: {snapshot['source']} | Abruf: {snapshot['retrieved_at']} | "
+            "Standard / kurzer Kontext. Andere Verarbeitungsmodi und lange Kontexte "
+            "können teurer sein."
+        )
+        self.invalidate_prompt_preview()
+
     def refresh_openai_models(self):
         try:
             self.ensure_running()
@@ -1076,6 +1154,7 @@ class MainWindow(QMainWindow):
         if previous in models:
             self.prompt_model.setCurrentText(previous)
         self.prompt_model.blockSignals(False)
+        self.show_selected_model_price()
         self.invalidate_prompt_preview()
 
     def provider_changed(self, provider):
@@ -1090,6 +1169,7 @@ class MainWindow(QMainWindow):
             self.prompt_model.setEditable(True)
             self.prompt_model.addItem("local-model")
         self.prompt_model.blockSignals(False)
+        self.show_selected_model_price()
         self.send_button.setEnabled(False)
 
     def active_workflow(self):
